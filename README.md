@@ -85,13 +85,77 @@ play and on the ending screen) clears both `S.scenario` and `S.profile`
 and returns to the very first screen — unlike "Change character," which
 only clears the profile and keeps the current case.
 
+## Attempt mechanics
+
+Presenting a case or attempting an escape **is** the day's action — it
+never happens alongside a build action, and it spends its own day the same
+way `chooseAction()` does. Justice used to be gated behind a hard
+`MIN_JUSTICE_DAY` floor (no hearing before day 21, regardless of
+readiness); that floor is gone. Both endings are attemptable from day 1,
+gated only by their confidence/chance formula.
+
+Failing an attempt now costs more than the day already spent:
+
+- **Underprepared multiplier** — `underpreparedMult(chance)` scales the
+  existing failure penalties (suspicion/evidence for Justice, suspicion/
+  escapePlan/connections for Escape) from 1x at a reasonable chance (≥40)
+  up to 2.5x as the chance approaches a desperate long-shot. Attempting at
+  very low confidence costs noticeably more than a near-miss.
+- **Justice fail day-cost** shrinks as Lawyer credibility and hearing
+  experience grow — `extraDays = round(12 * credibilityFactor *
+  attemptDiscount)`, where `credibilityFactor` ramps off `S.lawyer` and
+  `attemptDiscount` gives a modest break for each prior failed hearing
+  (floor 0.6x). A well-lawyered case that still gets denied loses less
+  calendar time than a first, underprepared filing.
+- **Escape fail day-cost** does the opposite — it grows with repeat
+  attempts (`rand(10,25) + 5 * priorFailedEscapeAttempts`, capped at 60):
+  guards learn your patterns, so getting caught again costs more, not
+  less.
+
+`S.justiceAttemptsUsed` and `S.escapeAttemptsUsed` track total *failed*
+attempts on each path (not total attempts — a winning attempt doesn't
+increment its counter) and persist through save/load. The grading system
+below is the reason they exist.
+
+## Grading
+
+Once a run ends, `computeGrade()` turns the final day count, winning path,
+and failed-attempt counts into a letter grade, shown on the ending screen
+alongside a short generated comment and the raw numeric score.
+
+- **Efficiency** compares `S.day` against a per-scenario par (20/25/28/32
+  for easy/normal/hard/veryhard), capped at 100.
+- **Path fit** rewards winning via a profile's *weak* path (+15) over its
+  *strong* one (-15) — Strategist and Manipulator lean Justice, Gentle
+  Giant leans Escape, Everyman has no lean (always 0) and can't earn the
+  Elite badge below.
+- A flat **Justice bonus** (+10) and a **6-point-per-fail attempt
+  penalty** (summed across both paths) round out the raw score, which is
+  then scaled by a difficulty multiplier (0.85 easy → 1.3 veryhard) and
+  mapped to an eleven-band letter grade (A+ down to F).
+- A **difficulty ceiling** clamps the letter down (never up) after it's
+  assigned: easy caps at B-, normal at B+, hard at A-; Very Hard has no
+  ceiling.
+- An **Elite** badge ("THE HARD WAY") can co-occur with any letter: it
+  requires Very Hard, winning via the profile's weak path, and zero failed
+  attempts on *either* path this game — a genuine first-try, no-dry-runs
+  result. It's intentionally rare; see the simulation numbers below.
+
+The comment text is assembled from three parts — an 11-band x 2-path base
+string, a profile clause (playing-to-type if the path was the profile's
+strength, against-the-grain if it was the weak path), and a scenario
+clause — so the same letter grade reads differently for a Strategist who
+grinded out Justice on Easy versus a Gentle Giant who barely escaped Very
+Hard.
+
 ## Simulation harness
 
 `sim/pipeline_sim.js` is a Node port of the balance-relevant game logic
 (stat factors, the Credibility pipeline, Difficulty Scenario modifiers,
-actions, odds formulas, milestone checks) used to validate stat-balance
-changes before they land in `index.html`. Working rule for this project:
-**simulate before relying on a balance change.**
+actions, odds formulas, milestone checks, attempt/fail day-costs, and the
+grading formula) used to validate stat-balance and grading changes before
+they land in `index.html`. Working rule for this project: **simulate
+before relying on a balance change.**
 
 Run it with:
 
@@ -108,6 +172,18 @@ Hard/Very Hard compress Justice hardest for low-Intellect profiles (Gentle
 Giant) and Escape hardest for low-Composure/high-suspicion profiles
 (Manipulator), while every profile keeps at least one clearly winnable
 path even at Very Hard.
+
+It then runs a second pass (300 playthroughs per profile x scenario x path,
+32 combinations) that grades every actual win with `computeGrade()` and
+prints a letter-grade distribution per combination plus an overall
+histogram, used to sanity-check the band boundaries and difficulty ceiling
+above before they ship. A handful of combinations report "no wins" — the
+same near-0%-win-rate cells from the table below (a physique-weak build
+attempting a maximum-security escape, say), which is expected, not a bug.
+The Elite badge is intentionally rare: across ~4,100 graded wins in a
+typical run, it fires roughly once, since it demands Very Hard, a
+first-try win, *and* zero failed attempts on either path in the same
+game.
 
 | Scenario | Profile | Justice win% | Escape win% |
 |---|---|---|---|
@@ -140,4 +216,6 @@ meaningfully alive at every tier.
 |---|---|
 | Flat single stat conflated three different relationships (family, legal, public) into one meaningless number | Done — replaced with the hidden Family/Lawyer/Media Credibility pipeline described above |
 | No difficulty selection — every case was the same premise/stakes | Done — four-tier Difficulty Scenario system described above, selected before profile |
-| Save system only knows `S.profile`, not `S.scenario` | Partial — `S.scenario` now round-trips through `localStorage` alongside `S.profile`; no versioned migration or grading/ranking table yet (planned for a later pass) |
+| Save system only knows `S.profile`, not `S.scenario` | Partial — `S.scenario` now round-trips through `localStorage` alongside `S.profile`; still no versioned migration |
+| No day/attempt-cost mechanics — Justice was gated by a flat day floor, and neither ending's fail penalty scaled with confidence or repeat attempts | Done — `MIN_JUSTICE_DAY` removed, attempts spend their own day, and fail penalties scale via `underpreparedMult()` plus scaled fail day-costs, described above |
+| No grading/ranking on the ending screen | Done — `computeGrade()` produces a letter grade, raw score, generated comment, and Elite badge, described above |

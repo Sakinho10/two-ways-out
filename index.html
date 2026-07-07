@@ -187,6 +187,17 @@
   .ending .days span{ display:block; font-size:12px; color:var(--ink-dim); letter-spacing:2px; }
   .ending p{ font-size:15px; line-height:1.6; color:var(--ink); max-width:480px; margin:0 auto 6px; }
 
+  .grade-block{ margin:22px 0 4px; padding-top:16px; border-top:1px solid var(--line); }
+  .grade-letter{ font-family:'Oswald',sans-serif; font-weight:700; font-size:56px; color:var(--manila); line-height:1; }
+  .grade-comment{ font-size:14px; line-height:1.6; color:var(--ink); max-width:480px; margin:10px auto 6px; }
+  .grade-score{ font-family:'Oswald',sans-serif; font-size:11px; letter-spacing:1px; color:var(--ink-dim); text-transform:uppercase; }
+  .elite-badge{
+    display:inline-block; margin-top:12px; padding:10px 14px;
+    border:1px solid var(--rust); color:var(--rust);
+    font-family:'Oswald',sans-serif; font-size:12px; letter-spacing:1px; text-transform:uppercase;
+    max-width:480px;
+  }
+
   ::selection{ background:var(--manila); color:#222; }
 </style>
 </head>
@@ -217,6 +228,7 @@ const S = {
   justiceAttemptsLeft: 3,
   justiceCooldownUntil: 0,
   escapeAttemptsUsed: 0,
+  justiceAttemptsUsed: 0,
   pendingConfirm: null
 };
 
@@ -546,21 +558,11 @@ const CATEGORIES = [
   { id:'laylow', label:'Keep your head down', side:'neutral', desc:'Cool off, no progress', actionIds:['rest'] }
 ];
 
-// A parole hearing needs at minimum a few weeks of basic court scheduling —
-// this is NOT the mechanism that makes Justice slow; it's just a small
-// realism floor. Which path is actually faster is meant to depend on the
-// player's profile: a high-Intellect build (the Strategist) should find
-// Justice is their FAST path, precisely because that's their strength,
-// while a low-Intellect/high-Physique build (the Gentle Giant) should find
-// the two paths roughly even, or Escape faster. Simulation confirms this:
-// with only this small floor, Strategist wins Justice ~4x faster than
-// Escape, while Gentle Giant is close to a coin flip between the two.
-// An earlier version of this constant (130) forced Justice to always be
-// slower than Escape for every profile — that fought directly against the
-// profile system (a Strategist's Intellect advantage bought better ODDS
-// but never actually faster PACING), so it was removed. See README
-// "Difficulty / balance mechanics" for the full reasoning and numbers.
-const MIN_JUSTICE_DAY = 21;
+// The hard day-floor that used to gate Justice attempts (MIN_JUSTICE_DAY)
+// has been removed entirely — Justice is attemptable from day 1, gated
+// only by the confidence/chance formula below, exactly like Escape always
+// was. Which path is actually faster/likelier still depends on profile via
+// that formula, not a fixed calendar floor.
 
 // Step 2 of the agreed 4-step plan: hard gates (evidence>=80, escapePlan>=70)
 // are removed entirely. The player can attempt either ending at any time;
@@ -584,6 +586,23 @@ const JUSTICE_COOLDOWN_DAYS = 25;
 // already in computeEscapeChance, which exists for every roll regardless
 // of escalation, not as an Escape-specific safety net.
 const ESCAPE_ESCALATION_PENALTY = 8; // odds points lost per prior failed attempt
+
+// Attempting either ending IS that day's action (see tryPresentCase /
+// tryAttemptEscape below, which spend their own day rather than routing
+// through chooseAction) — a failed attempt costs additional days on top of
+// that single day, scaled by how underprepared the attempt was.
+//
+// underpreparedMult: 1x at chance>=40 (a reasonable gamble), scaling up to
+// 2.5x as chance approaches 0 (a desperate long-shot) — a failed near-miss
+// shouldn't cost nearly as much as flailing at single-digit odds.
+function underpreparedMult(chance){
+  return Math.max(1, Math.min(2.5, 1 + (40 - chance) / 40 * 1.5));
+}
+
+// Justice fail day-cost shrinks as credibility (Lawyer) and experience
+// (prior failed hearings) grow — a well-lawyered case that gets denied
+// anyway loses less calendar time than a first, underprepared filing.
+const JUSTICE_FAIL_EXTRA_DAYS_BASE = 12;
 
 function computeJusticeChance(){
   const intFactor = (S.profile.stats.intellect - 50) * 0.006;
@@ -695,15 +714,23 @@ function maybeGrapevineTip(){
 }
 
 function tryAttemptEscape(){
+  // Attempting IS the day's action — it never happens alongside a build
+  // action on the same day, and it spends its own day directly rather than
+  // going through chooseAction().
+  S.day += 1;
   const chance = computeEscapeChance();
-  S.escapeAttemptsUsed += 1;
   const roll = rand(1,100);
   if(roll <= chance){
     S.over = true; S.ending = 'escape-win';
   } else {
-    S.day += rand(10,25);
-    applyDelta({suspicion:100, escapePlan:-40, connections:-20});
-    S.log = `The tunnel map was three years out of date — they rerouted the pipe last winter. Caught at the fence line. It costs you dearly: weeks in solitary, your network gutted, every guard now watching your hands instead of your face. Worse — they've seen this move now. Next time will be harder.\n\nYou start rebuilding, if you choose to keep going.`;
+    const mult = underpreparedMult(chance);
+    const baseDays = rand(10,25);
+    const escalationDays = S.escapeAttemptsUsed * 5; // prior failed escape attempts, before this one
+    const totalDays = Math.min(60, baseDays + escalationDays);
+    S.escapeAttemptsUsed += 1;
+    S.day += totalDays;
+    applyDelta({suspicion:Math.round(100*mult), escapePlan:-Math.round(40*mult), connections:-Math.round(20*mult)});
+    S.log = `The tunnel map was three years out of date — they rerouted the pipe last winter. Caught at the fence line. It costs you dearly: ${totalDays} days in solitary, your network gutted, every guard now watching your hands instead of your face. Worse — they've seen this move now. Next time will be harder.\n\nYou start rebuilding, if you choose to keep going.`;
     renderAfterFail();
     return;
   }
@@ -712,6 +739,8 @@ function tryAttemptEscape(){
 
 function tryPresentCase(){
   if(S.justiceAttemptsLeft <= 0) return; // button should be disabled in this state; guard anyway
+  // Attempting IS the day's action — same rule as Escape above.
+  S.day += 1;
   const chance = computeJusticeChance();
   S.justiceAttemptsLeft -= 1;
   if(S.justiceAttemptsLeft === 0) S.justiceCooldownUntil = S.day + JUSTICE_COOLDOWN_DAYS;
@@ -719,12 +748,18 @@ function tryPresentCase(){
   if(roll <= chance){
     S.over = true; S.ending = 'justice-win';
   } else {
-    applyDelta({suspicion:10, evidence:-10});
+    const mult = underpreparedMult(chance);
+    const credibilityFactor = rampEfficiency(S.lawyer, S.scenario.scrutiny.lawyerThreshold, 0.55);
+    const attemptDiscount = Math.max(0.6, 1 - 0.15 * S.justiceAttemptsUsed); // prior failed hearings, before this one
+    const extraDays = Math.round(JUSTICE_FAIL_EXTRA_DAYS_BASE * credibilityFactor * attemptDiscount);
+    S.justiceAttemptsUsed += 1;
+    S.day += extraDays;
+    applyDelta({suspicion:Math.round(10*mult), evidence:-Math.round(10*mult)});
     const remaining = S.justiceAttemptsLeft;
     const remainingNote = remaining > 0
       ? `You have ${remaining} hearing${remaining===1?'':'s'} left before you'll need to wait out a new one.`
       : `That was your last scheduled hearing for now — the board won't see you again for a while.`;
-    S.log = `The parole board reads your file, glances at the disciplinary notes sitting beside your appeal, and denies it in four minutes flat. "Insufficient corroboration," the letter says. ${remainingNote}`;
+    S.log = `The parole board reads your file, glances at the disciplinary notes sitting beside your appeal, and denies it in four minutes flat. "Insufficient corroboration," the letter says. It costs you ${extraDays} day${extraDays===1?'':'s'} of stalled paperwork on top of today. ${remainingNote}`;
     render();
     return;
   }
@@ -811,6 +846,157 @@ function gaugeBlock(){
   </div>`;
 }
 
+// ---------------------------------------------------------------------
+// Grading — computed once, at the ending screen, from the final day
+// count, which path won, and how many failed attempts (of either kind)
+// were spent getting there. Purely a summary; never feeds back into
+// gameplay.
+// ---------------------------------------------------------------------
+
+const PAR_DAYS = { easy:20, normal:25, hard:28, veryhard:32 };
+const DIFFICULTY_MULTIPLIER = { easy:0.85, normal:1.0, hard:1.15, veryhard:1.3 };
+const DIFFICULTY_CEILING = { easy:'B-', normal:'B+', hard:'A-', veryhard:null };
+const GRADE_ORDER = ['F','D','C-','C','C+','B-','B','B+','A-','A','A+'];
+
+// Per-profile statistical lean: which ending plays to strength vs. against
+// the grain. Everyman has no lean — pathFit is always 0, and it can't earn
+// the Elite badge, which requires winning via a weak path it doesn't have.
+const PATH_LEAN = {
+  strategist:  { strong:'justice', weak:'escape' },
+  giant:       { strong:'escape',  weak:'justice' },
+  manipulator: { strong:'justice', weak:'escape' },
+  everyman:    null
+};
+
+function letterForScore(rawScore){
+  if(rawScore >= 140) return 'A+';
+  if(rawScore >= 120) return 'A';
+  if(rawScore >= 105) return 'A-';
+  if(rawScore >= 90)  return 'B+';
+  if(rawScore >= 75)  return 'B';
+  if(rawScore >= 60)  return 'B-';
+  if(rawScore >= 45)  return 'C+';
+  if(rawScore >= 30)  return 'C';
+  if(rawScore >= 15)  return 'C-';
+  if(rawScore >= 0)   return 'D';
+  return 'F';
+}
+
+function computeGrade(){
+  const scenarioId = S.scenario.id;
+  const winPath = S.ending === 'justice-win' ? 'justice' : 'escape';
+  const par = PAR_DAYS[scenarioId];
+  const efficiency = Math.min(100, Math.round(100 * par / S.day));
+  const lean = PATH_LEAN[S.profile.id];
+  const pathFit = lean ? (winPath === lean.strong ? -15 : 15) : 0;
+  const justiceBonus = winPath === 'justice' ? 10 : 0;
+  const attemptPenalty = 6 * (S.justiceAttemptsUsed + S.escapeAttemptsUsed);
+  const difficultyMultiplier = DIFFICULTY_MULTIPLIER[scenarioId];
+  const rawScore = (efficiency + pathFit + justiceBonus - attemptPenalty) * difficultyMultiplier;
+
+  let letter = letterForScore(rawScore);
+  // Difficulty ceiling is applied AFTER the letter is assigned — it can
+  // only clamp down, never bump a low raw score up to meet it.
+  const ceiling = DIFFICULTY_CEILING[scenarioId];
+  if(ceiling && GRADE_ORDER.indexOf(letter) > GRADE_ORDER.indexOf(ceiling)){
+    letter = ceiling;
+  }
+
+  const elite = scenarioId === 'veryhard' && !!lean && winPath === lean.weak &&
+    S.justiceAttemptsUsed === 0 && S.escapeAttemptsUsed === 0;
+
+  return { letter, rawScore, pathFit, winPath, scenarioId, elite };
+}
+
+// Base band+path text — 11 letter bands x 2 winning paths.
+const GRADE_BAND_TEXT = {
+  'A+': {
+    justice: "Case No. 4471 — Dismissed, cleanly, on the strength of the file alone. The board didn't just let you go. They admitted they were wrong.",
+    escape:  "Gone without a trace anyone could act on. No alarm reached you in time to matter. Whoever reviews this file will find nothing but a closed door and an empty bunk."
+  },
+  'A': {
+    justice: "The evidence did the talking, and it didn't take long. A clean exoneration, no theatrics required.",
+    escape:  "A sharp, quiet exit. Whatever they thought they had locked down, it wasn't you."
+  },
+  'A-': {
+    justice: "The case held up, though not without a few uncomfortable questions along the way. Still — dismissed.",
+    escape:  "You're out, and it cost you more nerve than it should have. The fence line remembers you, but you're not behind it."
+  },
+  'B+': {
+    justice: "The board came around, eventually. A few holes in the case got patched just in time.",
+    escape:  "Out, mostly on instinct. A couple of close calls that could've gone differently."
+  },
+  'B': {
+    justice: "It took longer than a clean case should, but the paperwork finally caught up to the truth.",
+    escape:  "You made it past the wall, dragging a few mistakes behind you. Nobody's asking how — they're just glad it's over."
+  },
+  'B-': {
+    justice: "The board granted it, reluctantly, after more rejections than a strong case should need.",
+    escape:  "A messy, loud way out. You're free. The block's still talking about how."
+  },
+  'C+': {
+    justice: "Denied, denied, denied — until, somehow, not. The file's thick with reasons this shouldn't have worked.",
+    escape:  "You got over the wall on the third — or fourth, or fifth — try. Persistence, not planning."
+  },
+  'C': {
+    justice: "A war of attrition with the parole board, won on exhaustion more than evidence.",
+    escape:  "Every failed run cost you dearly. The one that finally worked barely looked different from the ones that didn't."
+  },
+  'C-': {
+    justice: "The board said yes the way you say yes to something you're tired of hearing about. Out, barely, and it shows.",
+    escape:  "You're out, held together by luck and whatever was left of the plan by the last attempt."
+  },
+  'D': {
+    justice: "Dismissed, technically. The file reads less like justice and more like paperwork nobody wanted to keep processing.",
+    escape:  "You're free. The how doesn't reflect well on the why."
+  },
+  'F': {
+    justice: "The board said yes once, after saying no enough times that it stopped meaning anything. Out, but not vindicated.",
+    escape:  "You got lucky exactly once, after a long run of not. The file doesn't call it a plan."
+  }
+};
+
+// Playing-to-type ("type") vs. against-the-grain ("grain") clause per
+// profile. Everyman has no lean, so both entries are identical.
+const PROFILE_CLAUSES = {
+  strategist: {
+    type:  "exactly the kind of case a sharp mind builds",
+    grain: "not the kind of exit anyone expected from a mind built for paperwork, not fences"
+  },
+  giant: {
+    type:  "the kind of exit a man his size doesn't need to explain",
+    grain: "not the kind of case anyone expected to hold up from someone who'd rather use his hands than a law book"
+  },
+  manipulator: {
+    type:  "the board never stood a chance against that kind of charm",
+    grain: "not the kind of run you'd expect from someone who talks his way out of everything else"
+  },
+  everyman: {
+    type:  "nothing flashy — just steady, unremarkable competence",
+    grain: "nothing flashy — just steady, unremarkable competence"
+  }
+};
+
+const SCENARIO_CLAUSES = {
+  easy:     "for a case nobody outside this block was ever going to remember",
+  normal:   "for a case that never stopped being personal",
+  hard:     "with the press still parked outside",
+  veryhard: "with half the country watching this file specifically"
+};
+
+const ELITE_TEXT = {
+  justice: "THE HARD WAY — First hearing. No prior rejections, no second chances needed. The board read the file once and let you go.",
+  escape:  "THE HARD WAY — First attempt, no dry runs. You read the wall once and found the gap nobody else saw."
+};
+
+function buildGradeComment(grade){
+  const base = GRADE_BAND_TEXT[grade.letter][grade.winPath];
+  const clauses = PROFILE_CLAUSES[S.profile.id];
+  const profileClause = grade.pathFit === -15 ? clauses.type : clauses.grain;
+  const scenarioClause = SCENARIO_CLAUSES[grade.scenarioId];
+  return `${base} — ${profileClause}, ${scenarioClause}.`;
+}
+
 function endingScreen(){
   const wins = {
     'escape-win': {
@@ -823,12 +1009,20 @@ function endingScreen(){
     }
   };
   const w = wins[S.ending];
+  const grade = computeGrade();
+  const comment = buildGradeComment(grade);
   return `
   <div class="ending">
     <div class="section-label">Case No. 4471 — Closed</div>
     <h2>${w.title}</h2>
     <div class="days">${S.day}<span>DAYS FROM THIS MORNING TO THE GATE</span></div>
     <p>${w.body}</p>
+    <div class="grade-block">
+      <div class="grade-letter">${grade.letter}</div>
+      <p class="grade-comment">${comment}</p>
+      <div class="grade-score">Score: ${Math.round(grade.rawScore)}</div>
+      ${grade.elite ? `<div class="elite-badge">${ELITE_TEXT[grade.winPath]}</div>` : ''}
+    </div>
     <p style="color:var(--ink-dim); font-size:12px; font-family:'Oswald',sans-serif; letter-spacing:1px; text-transform:uppercase; margin-top:14px;">Played as ${S.profile.name} &middot; ${S.scenario.tier}</p>
     <button class="restart" onclick="restart()">Play again as ${S.profile.name}</button>
     <button class="restart" onclick="changeProfile()" style="margin-top:8px;">Choose a different character</button>
@@ -846,6 +1040,7 @@ function resetGameState(){
   S.justiceAttemptsLeft = JUSTICE_MAX_ATTEMPTS;
   S.justiceCooldownUntil = 0;
   S.escapeAttemptsUsed = 0;
+  S.justiceAttemptsUsed = 0;
   S.pendingConfirm = null;
   S.log = "New cell, same choice. You wake up on the concrete shelf they call a bunk. Nobody's listening yet. Today, you decide what kind of man gets you out.";
   prevStats = { connections:S.connections, evidence:S.evidence, escapePlan:S.escapePlan, suspicion:S.suspicion };
@@ -975,12 +1170,11 @@ function render(){
 
   const justiceChance = computeJusticeChance();
   const escapeChance = computeEscapeChance();
-  const canJustice = S.day >= MIN_JUSTICE_DAY && S.justiceAttemptsLeft > 0;
+  const canJustice = S.justiceAttemptsLeft > 0;
   // Escape has no gate at all — it's always attemptable; odds alone communicate readiness.
 
   let justiceDisabledReason = '';
-  if(S.day < MIN_JUSTICE_DAY) justiceDisabledReason = `— no hearing scheduled before day ${MIN_JUSTICE_DAY}`;
-  else if(S.justiceAttemptsLeft <= 0) justiceDisabledReason = `— next hearing available day ${S.justiceCooldownUntil}`;
+  if(S.justiceAttemptsLeft <= 0) justiceDisabledReason = `— next hearing available day ${S.justiceCooldownUntil}`;
 
   let movesHtml;
   if(S.expandedCategory){
