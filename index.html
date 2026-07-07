@@ -903,7 +903,7 @@ function computeGrade(){
   }
 
   const elite = scenarioId === 'veryhard' && !!lean && winPath === lean.weak &&
-    S.justiceAttemptsUsed === 0 && S.escapeAttemptsUsed === 0;
+    S.justiceAttemptsUsed === 0 && S.escapeAttemptsUsed === 0 && rawScore >= 120;
 
   return { letter, rawScore, pathFit, winPath, scenarioId, elite };
 }
