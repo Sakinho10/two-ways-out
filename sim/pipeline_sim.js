@@ -1,7 +1,10 @@
-// Node simulation harness for the Family/Lawyer/Media Credibility pipeline.
-// Ports the balance-relevant functions from index.html so a rework of the
-// pipeline can be validated (win rates per profile) before it ships in
-// the real game. Run with: node sim/pipeline_sim.js
+// Node simulation harness for the Family/Lawyer/Media Credibility pipeline
+// AND the Difficulty Scenario system layered on top of it. Ports the
+// balance-relevant functions from index.html (stat factors, the pipeline,
+// actions, odds formulas, milestone checks, scenario modifiers) so a
+// rework of either system can be validated (win rates per profile x
+// scenario) before it ships in the real game. Run with:
+//   node sim/pipeline_sim.js
 
 function rand(a,b){ return Math.floor(Math.random()*(b-a+1))+a; }
 function pick(arr){ return arr[Math.floor(Math.random()*arr.length)]; }
@@ -20,8 +23,36 @@ const PROFILES = [
 function rampEfficiency(source, threshold, floor){
   return floor + (1 - floor) * Math.min(1, source / threshold);
 }
-const FAMILY_THRESHOLD = 30, LAWYER_FLOOR = 0.2;
-const LAWYER_THRESHOLD = 40, MEDIA_FLOOR = 0.15;
+
+// Mirrors the SCENARIOS array in index.html — see that file for the
+// narrative teaser text and full rationale per knob. Normal is the
+// existing tuned baseline; every value is neutral/1.0 for that tier.
+const SCENARIOS = [
+  {
+    id:'easy', name:'Easy (Robbery)',
+    security:{ suspicionMult:0.6, escapePlanMult:1.15, escalationPenaltyMult:0.6, guardHostileChance:0, guardThresholdDelta:2 },
+    scrutiny:{ familyThreshold:20, lawyerFloor:0.35, lawyerThreshold:30, mediaFloor:0.3, pipelineBonusMult:1.2, pipelineBonusCap:Infinity, tabloidEvent:false },
+    family:{ start:20, growthMult:1.15, cap:100 }
+  },
+  {
+    id:'normal', name:"Normal (Wife's Murder)",
+    security:{ suspicionMult:1, escapePlanMult:1, escalationPenaltyMult:1, guardHostileChance:0, guardThresholdDelta:0 },
+    scrutiny:{ familyThreshold:30, lawyerFloor:0.2, lawyerThreshold:40, mediaFloor:0.15, pipelineBonusMult:1, pipelineBonusCap:Infinity, tabloidEvent:false },
+    family:{ start:15, growthMult:1, cap:100 }
+  },
+  {
+    id:'hard', name:'Hard (Cop Killer)',
+    security:{ suspicionMult:1.3, escapePlanMult:0.85, escalationPenaltyMult:1.4, guardHostileChance:0.25, guardThresholdDelta:-2 },
+    scrutiny:{ familyThreshold:40, lawyerFloor:0.12, lawyerThreshold:55, mediaFloor:0.08, pipelineBonusMult:0.75, pipelineBonusCap:Infinity, tabloidEvent:false },
+    family:{ start:15, growthMult:0.75, cap:100 }
+  },
+  {
+    id:'veryhard', name:'Very Hard (Senator)',
+    security:{ suspicionMult:1.22, escapePlanMult:0.82, escalationPenaltyMult:1.3, guardHostileChance:0.35, guardThresholdDelta:-3 },
+    scrutiny:{ familyThreshold:45, lawyerFloor:0.12, lawyerThreshold:65, mediaFloor:0.07, pipelineBonusMult:0.6, pipelineBonusCap:7, tabloidEvent:true },
+    family:{ start:15, growthMult:0.85, cap:60 }
+  }
+];
 
 const MILESTONES = [
   { stage:'family', at:25, bonus:0.5 },
@@ -36,25 +67,41 @@ const MILESTONES = [
 ];
 
 function checkMilestones(S){
+  const scrutiny = S.scenario && S.scenario.scrutiny;
+  const bonusMult = scrutiny ? scrutiny.pipelineBonusMult : 1;
+  const bonusCap = scrutiny && scrutiny.pipelineBonusCap != null ? scrutiny.pipelineBonusCap : Infinity;
   for(const m of MILESTONES){
     const key = m.stage + m.at;
     if(!S.pipelineMilestones[key] && S[m.stage] >= m.at){
       S.pipelineMilestones[key] = true;
-      S.pipelineBonus += m.bonus;
+      S.pipelineBonus = Math.min(bonusCap, S.pipelineBonus + m.bonus*bonusMult);
     }
   }
 }
 
 function applyDelta(S, d){
-  if(d.family) S.family = clamp(S.family + d.family);
+  if(d.family){
+    let f = d.family;
+    if(f > 0 && S.scenario) f = Math.round(f * S.scenario.family.growthMult);
+    const cap = S.scenario ? S.scenario.family.cap : 100;
+    S.family = Math.max(0, Math.min(cap, S.family + f));
+  }
   if(d.lawyer) S.lawyer = clamp(S.lawyer + d.lawyer);
   if(d.media) S.media = clamp(S.media + d.media);
   if(d.connections) S.connections = clamp(S.connections + d.connections);
   if(d.evidence) S.evidence = clamp(S.evidence + d.evidence);
-  if(d.escapePlan) S.escapePlan = clamp(S.escapePlan + d.escapePlan);
+  if(d.escapePlan){
+    let p = d.escapePlan;
+    if(p > 0 && S.scenario) p = Math.round(p * S.scenario.security.escapePlanMult);
+    S.escapePlan = clamp(S.escapePlan + p);
+  }
   if(d.suspicion){
     let s = d.suspicion;
-    if(s > 0 && S.profile){ s = Math.round(s * composureFactor(S.profile.stats.composure)); }
+    if(s > 0){
+      if(S.profile) s *= composureFactor(S.profile.stats.composure);
+      if(S.scenario) s *= S.scenario.security.suspicionMult;
+      s = Math.round(s);
+    }
     S.suspicion = clamp(S.suspicion + s);
   }
   checkMilestones(S);
@@ -67,14 +114,19 @@ const ACTIONS = {
   library(S, mult){
     const intFactor = statFactor(S.profile.stats.intellect);
     const e = Math.round(rand(4,8)*mult*intFactor), fam = Math.round(rand(2,5)*mult*intFactor);
-    const lawyerEff = rampEfficiency(S.family, FAMILY_THRESHOLD, LAWYER_FLOOR);
+    const lawyerEff = rampEfficiency(S.family, S.scenario.scrutiny.familyThreshold, S.scenario.scrutiny.lawyerFloor);
     const law = Math.round(rand(1,3)*mult*intFactor*lawyerEff);
     applyDelta(S, {evidence:e, family:fam, lawyer:law});
     const overuse = S.actionCounts.library - LIBRARY_SUSPICION_THRESHOLD;
     if(overuse > 0) applyDelta(S, {suspicion: overuse*3});
   },
   guard(S, mult){
+    const sec = S.scenario.security;
     const chaFactor = statFactor(S.profile.stats.charisma);
+    if(sec.guardHostileChance > 0 && Math.random() < sec.guardHostileChance){
+      applyDelta(S, {suspicion: rand(5,10)});
+      return;
+    }
     const fam = Math.round(rand(5,9)*mult*chaFactor);
     applyDelta(S, {family:fam});
     if(Math.random() < 0.4){
@@ -82,11 +134,12 @@ const ACTIONS = {
       applyDelta(S, {evidence:e});
     }
     if(Math.random() < 0.15){
-      const mediaEff = rampEfficiency(S.lawyer, LAWYER_THRESHOLD, MEDIA_FLOOR);
+      const mediaEff = rampEfficiency(S.lawyer, S.scenario.scrutiny.lawyerThreshold, S.scenario.scrutiny.mediaFloor);
       const med = Math.round(rand(1,3)*mult*chaFactor*mediaEff);
       if(med > 0) applyDelta(S, {media:med});
     }
-    const overuse = S.actionCounts.guard - GUARD_CONNECTIONS_THRESHOLD;
+    const threshold = GUARD_CONNECTIONS_THRESHOLD + sec.guardThresholdDelta;
+    const overuse = S.actionCounts.guard - threshold;
     if(overuse > 0) applyDelta(S, {connections: -(overuse*2)});
   },
   letters(S, mult){
@@ -99,7 +152,7 @@ const ACTIONS = {
       return;
     }
     const e = Math.round(rand(6,11)*mult*intFactor);
-    const lawyerEff = rampEfficiency(S.family, FAMILY_THRESHOLD, LAWYER_FLOOR);
+    const lawyerEff = rampEfficiency(S.family, S.scenario.scrutiny.familyThreshold, S.scenario.scrutiny.lawyerFloor);
     const law = Math.round(rand(1,3)*mult*intFactor*lawyerEff);
     applyDelta(S, {evidence:e, family:normalFam, lawyer:law});
   },
@@ -140,7 +193,8 @@ function computeJusticeChance(S){
 }
 function computeEscapeChance(S){
   const physFactor = (S.profile.stats.physique - 50) * 0.006;
-  const escalation = S.escapeAttemptsUsed * ESCAPE_ESCALATION_PENALTY;
+  const escalationMult = S.scenario ? S.scenario.security.escalationPenaltyMult : 1;
+  const escalation = S.escapeAttemptsUsed * ESCAPE_ESCALATION_PENALTY * escalationMult;
   const raw = 3 + S.escapePlan * (0.85 + physFactor) - S.suspicion * 0.35 - escalation;
   return Math.max(1, Math.min(95, raw));
 }
@@ -153,6 +207,11 @@ function maybeRegenJusticeAttempt(S){
 }
 
 function maybeEvent(S){
+  if(S.scenario && S.scenario.scrutiny.tabloidEvent && rand(1,100) <= 4){
+    applyDelta(S, {suspicion: rand(10,18)});
+    S.pipelineBonus = Math.max(0, S.pipelineBonus - rand(1,2));
+    return;
+  }
   const roll = rand(1,100);
   const threshold = S.suspicion;
   if(roll <= threshold * 0.6){
@@ -193,15 +252,15 @@ function maybeGrapevineTip(S){
   }
 }
 
-function newState(profile){
+function newState(profile, scenario){
   return {
     day: 1,
-    family: 15, lawyer: 0, media: 0,
+    family: scenario.family.start, lawyer: 0, media: 0,
     pipelineMilestones: {}, pipelineBonus: 0,
     connections: 15, evidence: 5, escapePlan: 5, suspicion: 10,
     over: false, ending: null,
     lastActionId: null, actionStreak: 0,
-    profile,
+    profile, scenario,
     actionCounts: { library:0, guard:0, letters:0, crew:0, scout:0, bribe:0, rest:0 },
     justiceAttemptsLeft: JUSTICE_MAX_ATTEMPTS,
     justiceCooldownUntil: 0,
@@ -261,7 +320,9 @@ function tryAttemptEscape(S){
 // each strategy gets its own day budget because a bot that gives up on
 // Justice after ~120 days but keeps grinding Escape for ~900 is what
 // actually reproduces both columns of the target table simultaneously; a
-// single shared cap could not fit both.
+// single shared cap could not fit both. These bot budgets/thresholds are
+// shared across all four scenarios — only the underlying formulas differ
+// per scenario, exactly as they would for a real player.
 const JUSTICE_CYCLE = ['library','guard','letters'];
 const ESCAPE_CYCLE = ['crew','scout','bribe'];
 
@@ -303,9 +364,10 @@ function escapeGreedyStep(S, cyclePos){
   return cyclePos + 1;
 }
 
-function simulateOne(profileId, strategy){
+function simulateOne(profileId, scenarioId, strategy){
   const profile = PROFILES.find(p=>p.id===profileId);
-  const S = newState(profile);
+  const scenario = SCENARIOS.find(s=>s.id===scenarioId);
+  const S = newState(profile, scenario);
   let cyclePos = 0;
   const maxDays = strategy === 'justice' ? JUSTICE_BOT_MAX_DAYS : ESCAPE_BOT_MAX_DAYS;
   while(!S.over && S.day < maxDays){
@@ -314,10 +376,10 @@ function simulateOne(profileId, strategy){
   return S.ending || 'timeout';
 }
 
-function runBatch(profileId, strategy, n){
+function runBatch(profileId, scenarioId, strategy, n){
   const wins = { 'justice-win':0, 'escape-win':0, 'timeout':0 };
   for(let i=0;i<n;i++){
-    const ending = simulateOne(profileId, strategy);
+    const ending = simulateOne(profileId, scenarioId, strategy);
     wins[ending] += 1;
   }
   return wins;
@@ -325,20 +387,23 @@ function runBatch(profileId, strategy, n){
 
 function main(){
   const N = 400;
-  console.log(`Simulating ${N} playthroughs per profile x strategy (justice-greedy, escape-greedy)...\n`);
-  console.log('Profile'.padEnd(16) + 'Justice win%'.padStart(14) + 'Escape win%'.padStart(14));
-  for(const profile of PROFILES){
-    const justiceRuns = runBatch(profile.id, 'justice', N);
-    const escapeRuns = runBatch(profile.id, 'escape', N);
-    const justiceWinPct = (justiceRuns['justice-win'] / N * 100).toFixed(1);
-    const escapeWinPct = (escapeRuns['escape-win'] / N * 100).toFixed(1);
-    console.log(profile.name.padEnd(16) + (justiceWinPct + '%').padStart(14) + (escapeWinPct + '%').padStart(14));
+  console.log(`Simulating ${N} playthroughs per profile x scenario x strategy (justice-greedy, escape-greedy)...\n`);
+  console.log('Scenario'.padEnd(14) + 'Profile'.padEnd(16) + 'Justice win%'.padStart(14) + 'Escape win%'.padStart(14));
+  for(const scenario of SCENARIOS){
+    for(const profile of PROFILES){
+      const justiceRuns = runBatch(profile.id, scenario.id, 'justice', N);
+      const escapeRuns = runBatch(profile.id, scenario.id, 'escape', N);
+      const justiceWinPct = (justiceRuns['justice-win'] / N * 100).toFixed(1);
+      const escapeWinPct = (escapeRuns['escape-win'] / N * 100).toFixed(1);
+      console.log(scenario.id.padEnd(14) + profile.name.padEnd(16) + (justiceWinPct + '%').padStart(14) + (escapeWinPct + '%').padStart(14));
+    }
+    console.log('');
   }
 }
 
 if(require.main === module) main();
 
 module.exports = {
-  PROFILES, rampEfficiency, applyDelta, computeJusticeChance, computeEscapeChance,
+  PROFILES, SCENARIOS, rampEfficiency, applyDelta, computeJusticeChance, computeEscapeChance,
   newState, runAction, tryPresentCase, tryAttemptEscape, simulateOne, runBatch
 };
