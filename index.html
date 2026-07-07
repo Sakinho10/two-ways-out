@@ -1,0 +1,857 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
+<meta name="theme-color" content="#26241f">
+<title>Case No. 4471 — Two Ways Out</title>
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link href="https://fonts.googleapis.com/css2?family=Special+Elite&family=Oswald:wght@400;500;700&display=swap" rel="stylesheet">
+<style>
+  :root{
+    --concrete:#26241f;
+    --concrete-panel:#312e28;
+    --manila:#d9c9a0;
+    --manila-dim:#a99a78;
+    --rust:#b0501f;
+    --rust-dim:#7a3c19;
+    --sanction:#8f2a20;
+    --ink:#e9e1cb;
+    --ink-dim:#a49a82;
+    --line:#4a4640;
+  }
+  *{box-sizing:border-box;}
+  html,body{margin:0;padding:0;height:100%;}
+  body{
+    background:
+      radial-gradient(ellipse at 50% -10%, #3a362e 0%, var(--concrete) 60%);
+    color:var(--ink);
+    font-family:'Special Elite', monospace;
+    display:flex;
+    justify-content:center;
+    padding:24px 12px 60px;
+    padding-top:max(24px, env(safe-area-inset-top));
+    padding-bottom:max(60px, env(safe-area-inset-bottom));
+    padding-left:max(12px, env(safe-area-inset-left));
+    padding-right:max(12px, env(safe-area-inset-right));
+    min-height:100%;
+  }
+  .wrap{ width:100%; max-width:640px; }
+
+  /* header */
+  .masthead{
+    display:flex; justify-content:space-between; align-items:flex-end;
+    border-bottom:3px double var(--line);
+    padding-bottom:10px; margin-bottom:16px;
+  }
+  .masthead h1{
+    font-family:'Oswald',sans-serif; font-weight:700; letter-spacing:2px;
+    font-size:22px; margin:0; color:var(--ink); text-transform:uppercase;
+  }
+  .masthead .case{
+    font-family:'Oswald',sans-serif; font-size:13px; color:var(--ink-dim);
+    letter-spacing:1px;
+  }
+  .day-badge{
+    font-family:'Oswald',sans-serif; font-weight:700; font-size:34px;
+    color:var(--manila); line-height:1; text-align:right;
+  }
+  .day-badge span{display:block; font-size:11px; font-weight:400; color:var(--ink-dim); letter-spacing:2px;}
+
+  /* dual gauge — signature element */
+  .gauge-block{ margin-bottom:18px; }
+  .gauge-labels{ display:flex; justify-content:space-between; font-family:'Oswald',sans-serif; font-size:12px; letter-spacing:1px; margin-bottom:4px; }
+  .gauge-labels .just{color:var(--manila);} .gauge-labels .esc{color:var(--rust);}
+  .gauge{
+    position:relative; height:26px; background:var(--concrete-panel);
+    border:1px solid var(--line); overflow:hidden;
+  }
+  .gauge-fill-just{
+    position:absolute; left:0; top:0; bottom:0;
+    background:repeating-linear-gradient(90deg, var(--manila-dim) 0 2px, var(--manila) 2px 4px);
+    transition:width .5s ease;
+  }
+  .gauge-fill-esc{
+    position:absolute; right:0; top:0; bottom:0;
+    background:repeating-linear-gradient(90deg, var(--rust-dim) 0 3px, var(--rust) 3px 6px);
+    transition:width .5s ease;
+  }
+  .gauge-mid{ position:absolute; left:50%; top:-4px; bottom:-4px; width:1px; background:var(--line); }
+
+  /* stat row */
+  .stats{ display:grid; grid-template-columns:repeat(3,1fr); gap:8px; margin-bottom:18px; }
+  .stat{
+    background:var(--concrete-panel); border:1px solid var(--line); padding:8px 10px;
+  }
+  .stat .k{ font-family:'Oswald',sans-serif; font-size:10px; letter-spacing:1px; color:var(--ink-dim); text-transform:uppercase; }
+  .stat .v{ font-family:'Oswald',sans-serif; font-size:18px; color:var(--ink); }
+  .stat.warn .v{ color:var(--sanction); }
+
+  /* log */
+  .log{
+    background:var(--concrete-panel); border:1px solid var(--line);
+    padding:14px 16px; margin-bottom:18px; min-height:88px;
+    font-size:15px; line-height:1.55; color:var(--ink);
+    white-space:pre-line;
+  }
+  .log .tag{ color:var(--manila-dim); font-family:'Oswald',sans-serif; font-size:11px; letter-spacing:1px; display:block; margin-bottom:6px;}
+
+  /* actions */
+  .section-label{
+    font-family:'Oswald',sans-serif; font-size:12px; letter-spacing:2px; color:var(--ink-dim);
+    text-transform:uppercase; margin:0 0 8px 2px;
+  }
+  .actions{ display:flex; flex-direction:column; gap:10px; margin-bottom:20px; }
+  button.action{
+    font-family:'Special Elite',monospace; font-size:15px; text-align:left;
+    color:var(--ink); background:var(--concrete-panel); border:1px solid var(--line);
+    border-left:4px solid var(--line);
+    padding:14px 16px; min-height:48px; cursor:pointer; transition:.15s;
+    -webkit-tap-highlight-color:transparent;
+  }
+  button.action:hover:not(:disabled){ background:#3a362e; border-left-color:var(--manila); }
+  button.action.esc:hover:not(:disabled){ border-left-color:var(--rust); }
+  button.action:active:not(:disabled){ background:#3a362e; }
+  button.action:disabled{ opacity:.35; cursor:not-allowed; }
+  button.action .desc{ display:block; font-size:12px; color:var(--ink-dim); margin-top:4px; font-family:'Oswald',sans-serif; letter-spacing:.3px;}
+  button.action.attempt{ border-left-color:var(--manila); font-family:'Oswald',sans-serif; font-weight:700; letter-spacing:1px; text-transform:uppercase; font-size:13px;}
+  button.action.attempt.esc{ border-left-color:var(--rust); }
+
+  /* category cards (mobile-first grouping) */
+  button.category{
+    font-family:'Oswald',sans-serif; font-weight:700; letter-spacing:1px; text-transform:uppercase;
+    font-size:15px; text-align:left; color:var(--ink);
+    background:var(--concrete-panel); border:1px solid var(--line); border-left:5px solid var(--manila-dim);
+    padding:16px 16px; min-height:56px; cursor:pointer; transition:.15s;
+    -webkit-tap-highlight-color:transparent;
+  }
+  button.category.esc{ border-left-color:var(--rust-dim); }
+  button.category.neutral{ border-left-color:var(--ink-dim); }
+  button.category:active{ background:#3a362e; }
+  button.category .desc{ display:block; font-size:12px; font-weight:400; letter-spacing:.3px; color:var(--ink-dim); text-transform:none; margin-top:5px; font-family:'Special Elite',monospace; }
+
+  .back-btn{
+    display:inline-flex; align-items:center; gap:6px;
+    font-family:'Oswald',sans-serif; font-size:12px; letter-spacing:1px; text-transform:uppercase;
+    color:var(--ink-dim); background:none; border:none; padding:8px 2px; margin-bottom:10px; cursor:pointer;
+  }
+  .back-btn:active{ color:var(--ink); }
+
+  @keyframes pulse-just{ 0%{color:var(--manila); text-shadow:0 0 8px rgba(217,201,160,.7);} 100%{color:var(--ink); text-shadow:none;} }
+  @keyframes pulse-esc{ 0%{color:var(--rust); text-shadow:0 0 8px rgba(176,80,31,.7);} 100%{color:var(--ink); text-shadow:none;} }
+  @keyframes pulse-warn{ 0%{color:var(--sanction); text-shadow:0 0 8px rgba(143,42,32,.7);} 100%{color:inherit; text-shadow:none;} }
+  .pulse-up{ animation:pulse-just .9s ease-out; }
+  .pulse-down{ animation:pulse-esc .9s ease-out; }
+  .pulse-warn{ animation:pulse-warn .9s ease-out; }
+
+  .restart-link{
+    display:inline-block; margin-top:4px; margin-right:14px;
+    font-family:'Oswald',sans-serif; font-size:10px; letter-spacing:1px; text-transform:uppercase;
+    color:var(--ink-dim); background:none; border:none; padding:4px 0; cursor:pointer;
+    -webkit-tap-highlight-color:transparent; text-decoration:underline; text-underline-offset:2px;
+  }
+  .restart-link:last-of-type{ margin-right:0; }
+  .restart-link:active{ color:var(--ink); }
+
+  .confirm-banner{
+    background:var(--sanction); color:var(--ink);
+    padding:12px 14px; margin-bottom:14px;
+    font-family:'Oswald',sans-serif; font-size:13px; letter-spacing:.3px;
+    display:flex; flex-direction:column; gap:10px;
+  }
+  .confirm-banner .msg{ line-height:1.4; }
+  .confirm-banner .btns{ display:flex; gap:10px; }
+  .confirm-banner button{
+    flex:1; padding:10px; min-height:40px; cursor:pointer;
+    font-family:'Oswald',sans-serif; font-weight:700; letter-spacing:1px; text-transform:uppercase; font-size:12px;
+    border:1px solid var(--ink); background:none; color:var(--ink);
+    -webkit-tap-highlight-color:transparent;
+  }
+  .confirm-banner button.confirm-yes{ background:var(--ink); color:var(--sanction); }
+  .confirm-banner button:active{ opacity:.8; }
+
+  .restart{
+    display:block; width:100%; margin-top:10px; padding:16px;
+    min-height:48px;
+    font-family:'Oswald',sans-serif; font-weight:700; letter-spacing:2px; text-transform:uppercase;
+    background:none; border:1px solid var(--ink-dim); color:var(--ink-dim); cursor:pointer;
+    -webkit-tap-highlight-color:transparent;
+  }
+  .restart:active{ color:var(--ink); border-color:var(--ink); }
+
+  .ending{
+    text-align:center; padding:30px 10px;
+  }
+  .ending h2{ font-family:'Oswald',sans-serif; letter-spacing:1px; font-size:24px; margin-bottom:6px;}
+  .ending .days{ font-family:'Oswald',sans-serif; font-size:46px; color:var(--manila); margin:10px 0;}
+  .ending .days span{ display:block; font-size:12px; color:var(--ink-dim); letter-spacing:2px; }
+  .ending p{ font-size:15px; line-height:1.6; color:var(--ink); max-width:480px; margin:0 auto 6px; }
+
+  ::selection{ background:var(--manila); color:#222; }
+</style>
+</head>
+<body>
+<div class="wrap" id="app"></div>
+
+<script>
+const S = {
+  day: 1,
+  trust: 15,
+  connections: 15,
+  evidence: 5,
+  escapePlan: 5,
+  suspicion: 10,
+  log: "You wake up on the concrete shelf they call a bunk. Four hundred and some days since they brought you in for a robbery you didn't commit. Nobody's listening yet. Today, you decide what kind of man gets you out.",
+  over: false,
+  ending: null,
+  expandedCategory: null,
+  lastActionId: null,
+  actionStreak: 0,
+  profile: null,
+  actionCounts: { library:0, guard:0, letters:0, crew:0, scout:0, bribe:0, rest:0 },
+  justiceAttemptsLeft: 3,
+  justiceCooldownUntil: 0,
+  escapeAttemptsUsed: 0,
+  pendingConfirm: null
+};
+
+const SAVE_KEY = 'twoWaysOutSave-v1';
+
+function saveState(){
+  try{ localStorage.setItem(SAVE_KEY, JSON.stringify(S)); }catch(e){ /* storage unavailable, ignore */ }
+}
+
+function loadState(){
+  try{
+    const raw = localStorage.getItem(SAVE_KEY);
+    if(!raw) return false;
+    const saved = JSON.parse(raw);
+    Object.assign(S, saved);
+    return true;
+  }catch(e){ return false; }
+}
+
+function clearSave(){
+  try{ localStorage.removeItem(SAVE_KEY); }catch(e){ /* ignore */ }
+}
+
+// track previous stat values to animate the ones that changed on next render
+let prevStats = { trust:S.trust, connections:S.connections, evidence:S.evidence, escapePlan:S.escapePlan, suspicion:S.suspicion };
+
+function clamp(v){ return Math.max(0, Math.min(100, v)); }
+
+// stat -> reward multiplier: 0.6x at stat 0, 1.0x at stat 50, 1.4x at stat 100
+function statFactor(v){ return 0.6 + (v/100)*0.8; }
+
+// composure -> suspicion-gain multiplier: HIGH composure means LESS suspicion picked up.
+// 1.4x at composure 0 (rattles easily), 1.0x at 50, 0.6x at 100 (ice cold).
+function composureFactor(v){ return 1.4 - (v/100)*0.8; }
+
+const PROFILES = [
+  {
+    id:'strategist', name:'The Strategist',
+    tagline:'Sharp mind, soft hands.',
+    desc:"You think three moves ahead. You have never won a fight in your life.",
+    stats:{ intellect:85, physique:25, charisma:50, composure:55 }
+  },
+  {
+    id:'giant', name:'The Gentle Giant',
+    tagline:'Everyone likes him. Paperwork is not his thing.',
+    desc:"People trust you on sight, guards included. Reading a legal brief gives you a headache.",
+    stats:{ intellect:30, physique:90, charisma:70, composure:65 }
+  },
+  {
+    id:'manipulator', name:'The Manipulator',
+    tagline:'Brilliant. Unsettling. Never fully believed.',
+    desc:"You can talk almost anyone into almost anything — except into forgetting how you make their skin crawl.",
+    stats:{ intellect:80, physique:50, charisma:65, composure:30 }
+  },
+  {
+    id:'everyman', name:'The Everyman',
+    tagline:'No edge. No exploit. Steady.',
+    desc:"Nothing about you stands out, including your problems. You keep an even keel better than most.",
+    stats:{ intellect:55, physique:55, charisma:55, composure:70 }
+  }
+];
+
+function applyDelta(d){
+  if(d.trust) S.trust = clamp(S.trust + d.trust);
+  if(d.connections) S.connections = clamp(S.connections + d.connections);
+  if(d.evidence) S.evidence = clamp(S.evidence + d.evidence);
+  if(d.escapePlan) S.escapePlan = clamp(S.escapePlan + d.escapePlan);
+  if(d.suspicion){
+    let s = d.suspicion;
+    // composure only softens INCREASES in suspicion, never the relief from resting
+    if(s > 0 && S.profile){ s = Math.round(s * composureFactor(S.profile.stats.composure)); }
+    S.suspicion = clamp(S.suspicion + s);
+  }
+}
+
+function rand(a,b){ return Math.floor(Math.random()*(b-a+1))+a; }
+function pick(arr){ return arr[Math.floor(Math.random()*arr.length)]; }
+
+const LIBRARY_SUSPICION_THRESHOLD = 5; // uses after which "you're always in here" starts drawing attention
+const GUARD_CONNECTIONS_THRESHOLD = 5; // uses after which the yard starts calling you a guard's pet
+
+const ACTIONS = [
+  {
+    id:'library', label:'Volunteer in the law library', side:'just',
+    desc:'+Evidence, +Trust · weaker if repeated, and too much time in here draws attention',
+    run(mult=1){
+      const intFactor = statFactor(S.profile.stats.intellect);
+      const e = Math.round(rand(4,8)*mult*intFactor), t = Math.round(rand(2,5)*mult*intFactor);
+      applyDelta({evidence:e, trust:t});
+      let text = `You spend the day buried in case law, cross-referencing your file against precedent. The clerk, Mrs. Okafor, notices you actually read the books instead of hiding contraband in them. "Keep this up," she says, "and someone upstairs might finally read your appeal." (+${e} Evidence, +${t} Trust)`;
+      const overuse = S.actionCounts.library - LIBRARY_SUSPICION_THRESHOLD;
+      if(overuse > 0){
+        const extraSuspicion = overuse * 3;
+        applyDelta({suspicion:extraSuspicion});
+        text += `\n\nYou're in here again. Every day, same table, same books. The other men have started asking what exactly you're building — and so has a guard who isn't Mrs. Okafor. (+${extraSuspicion} Suspicion — you've become a fixture)`;
+      }
+      return text;
+    }
+  },
+  {
+    id:'guard', label:'Do a guard a quiet favor', side:'just',
+    desc:'+Trust, small +Evidence chance · weaker if repeated, and too many favors makes you look like a sucker',
+    run(mult=1){
+      const chaFactor = statFactor(S.profile.stats.charisma);
+      const t = Math.round(rand(5,9)*mult*chaFactor);
+      applyDelta({trust:t});
+      let text;
+      if(Math.random()<0.4){
+        const e = Math.round(rand(3,7)*mult*chaFactor);
+        applyDelta({evidence:e});
+        text = `You cover for a rookie guard who forgot to log a headcount, no questions asked. Grateful, he lets slip that the arresting officer on your case has a disciplinary file of his own. (+${t} Trust, +${e} Evidence)`;
+      } else {
+        text = `You keep an eye out for a guard who's been decent to you, warning him before a surprise walkthrough. He owes you now, even if he'd never say it out loud. (+${t} Trust)`;
+      }
+      const overuse = S.actionCounts.guard - GUARD_CONNECTIONS_THRESHOLD;
+      if(overuse > 0){
+        const connLoss = overuse * 2;
+        applyDelta({connections:-connLoss});
+        text += `\n\nWord's gotten around the block that you're cozy with the staff. Nobody says it to your face, but favors stop coming your way, and a couple of guys go out of their way to make your day longer. (-${connLoss} Connections — they've made you as a guard's pet)`;
+      }
+      return text;
+    }
+  },
+  {
+    id:'letters', label:'Write to your lawyer & family', side:'just',
+    desc:'+Evidence · costs Trust, very slow, and doesn\'t always land',
+    run(mult=1){
+      if(S.trust < 8){
+        return `You write the letters anyway, but with no one on the outside believing you yet, they land in a drawer. Nothing changes.`;
+      }
+      const intFactor = statFactor(S.profile.stats.intellect);
+      const failChance = 0.35 - (S.profile.stats.intellect/100)*0.15; // sharper writing is more likely to land
+      if(Math.random() < failChance){
+        applyDelta({trust:-4});
+        return `Your sister visits the original witness, but he won't sign anything — spooked, or paid off, hard to say. Your lawyer's motion goes nowhere this round. It cost you nothing but time, and the little Trust it takes to keep asking. (-4 Trust, no Evidence gained)`;
+      }
+      const e = Math.round(rand(6,11)*mult*intFactor);
+      applyDelta({evidence:e, trust:-4});
+      return `Your sister finds the courage to visit the original witness. Your lawyer, paid in installments your family can barely afford, files a motion for review. It's slow, expensive, exhausting — but it's real. (+${e} Evidence, -4 Trust, spent on the lawyer)`;
+    }
+  },
+  {
+    id:'crew', label:'Trade favors with the cellblock crew', side:'esc',
+    desc:'+Connections, +Escape Plan · +Suspicion, weaker if repeated',
+    run(mult=1){
+      const chaFactor = statFactor(S.profile.stats.charisma);
+      const c = Math.round(rand(5,9)*mult*chaFactor), p = Math.round(rand(3,6)*mult*chaFactor), s = rand(4,8);
+      applyDelta({connections:c, escapePlan:p, suspicion:s});
+      return `You sit at the crew's table at lunch. In exchange for watching a corridor during their business, they slip you a filed-down key blank and a hand-drawn map of the pipe tunnels. (+${c} Connections, +${p} Escape Plan, +${s} Suspicion)`;
+    }
+  },
+  {
+    id:'scout', label:'Scout the guard rotations', side:'esc',
+    desc:'+Escape Plan · small +Suspicion, weaker if repeated',
+    run(mult=1){
+      const intFactor = statFactor(S.profile.stats.intellect);
+      const p = Math.round(rand(5,9)*mult*intFactor), s = rand(1,4);
+      applyDelta({escapePlan:p, suspicion:s});
+      return `From the yard, you time the changeovers, count footsteps, memorize which camera has been "broken" for months. Patience, of a different kind. (+${p} Escape Plan, +${s} Suspicion)`;
+    }
+  },
+  {
+    id:'bribe', label:'Bribe a guard for tools', side:'esc',
+    desc:'Costs Connections, big +Escape Plan, big +Suspicion',
+    run(mult=1){
+      const phyFactor = statFactor(S.profile.stats.physique);
+      if(S.connections < 12){
+        applyDelta({suspicion:6});
+        return `You don't have enough on the inside to make this offer credible. The guard reports the approach. Eyes are on you now. (+6 Suspicion, nothing gained)`;
+      }
+      const p = Math.round(rand(10,16)*mult*phyFactor), s = rand(8,14);
+      applyDelta({connections:-12, escapePlan:p, suspicion:s});
+      return `Cash your sister smuggled in on a visit buys you a hacksaw blade and thirty unwatched seconds by the east gate. Expensive. Loud, if anyone's counting. (+${p} Escape Plan, -12 Connections, +${s} Suspicion)`;
+    }
+  },
+  {
+    id:'rest', label:'Keep your head down', side:'neutral',
+    desc:'-Suspicion · no progress',
+    run(mult=1){
+      const s = rand(4,9);
+      applyDelta({suspicion:-s});
+      return `You do nothing worth noticing. Some days that's the smartest move in the building. (-${s} Suspicion)`;
+    }
+  }
+];
+
+const CATEGORIES = [
+  { id:'justice', label:'Play it straight', side:'just', desc:'Build your case, the slow way — repeating a move loses steam', actionIds:['library','guard','letters'] },
+  { id:'escape', label:'Play the angles', side:'esc', desc:'Build your way out, the risky way — repeating a move loses steam', actionIds:['crew','scout','bribe'] },
+  { id:'laylow', label:'Keep your head down', side:'neutral', desc:'Cool off, no progress', actionIds:['rest'] }
+];
+
+// A parole hearing needs at minimum a few weeks of basic court scheduling —
+// this is NOT the mechanism that makes Justice slow; it's just a small
+// realism floor. Which path is actually faster is meant to depend on the
+// player's profile: a high-Intellect build (the Strategist) should find
+// Justice is their FAST path, precisely because that's their strength,
+// while a low-Intellect/high-Physique build (the Gentle Giant) should find
+// the two paths roughly even, or Escape faster. Simulation confirms this:
+// with only this small floor, Strategist wins Justice ~4x faster than
+// Escape, while Gentle Giant is close to a coin flip between the two.
+// An earlier version of this constant (130) forced Justice to always be
+// slower than Escape for every profile — that fought directly against the
+// profile system (a Strategist's Intellect advantage bought better ODDS
+// but never actually faster PACING), so it was removed. See README
+// "Difficulty / balance mechanics" for the full reasoning and numbers.
+const MIN_JUSTICE_DAY = 21;
+
+// Step 2 of the agreed 4-step plan: hard gates (evidence>=80, escapePlan>=70)
+// are removed entirely. The player can attempt either ending at any time;
+// the ODDS (see computeJusticeChance/computeEscapeChance below) carry the
+// weight of "are you actually ready," not a blocked button. Simulated and
+// tuned against the step-1 formula rebalance — see README for the numbers.
+
+// Justice: a capped number of hearings, with a cooldown that grants back
+// +1 attempt at a time (not a full refill) once exhausted — mirrors how
+// parole/appeal systems actually work (you don't get to reapply the next
+// day). Justice has no "no floor" instruction like Escape does below —
+// attempts always eventually regenerate, so a patient player is never
+// permanently locked out, only slowed down.
+const JUSTICE_MAX_ATTEMPTS = 3;
+const JUSTICE_COOLDOWN_DAYS = 25;
+
+// Escape: unlimited attempts, but each failure makes the NEXT one harder —
+// guards learn your patterns. Deliberately has no floor: per explicit
+// direction, this is allowed to trend toward genuinely hopeless if a player
+// just keeps ramming the wall. The only floor is the general [1,95] clamp
+// already in computeEscapeChance, which exists for every roll regardless
+// of escalation, not as an Escape-specific safety net.
+const ESCAPE_ESCALATION_PENALTY = 8; // odds points lost per prior failed attempt
+
+function computeJusticeChance(){
+  const intFactor = (S.profile.stats.intellect - 50) * 0.006;
+  const raw = 3 + S.evidence * (0.85 + intFactor) + S.trust * 0.12 - S.suspicion * 0.3;
+  return Math.max(1, Math.min(95, raw));
+}
+
+function computeEscapeChance(){
+  const physFactor = (S.profile.stats.physique - 50) * 0.006;
+  const escalation = S.escapeAttemptsUsed * ESCAPE_ESCALATION_PENALTY;
+  const raw = 3 + S.escapePlan * (0.85 + physFactor) - S.suspicion * 0.35 - escalation;
+  return Math.max(1, Math.min(95, raw));
+}
+
+// Qualitative read on the numeric chance, so removing the hard gates doesn't
+// leave the player flying blind — an informed gamble, not a blind one.
+function confidenceLabel(chance){
+  if(chance < 12) return 'hopeless';
+  if(chance < 28) return 'flimsy';
+  if(chance < 45) return 'shaky';
+  if(chance < 62) return 'decent';
+  if(chance < 80) return 'solid';
+  return 'airtight';
+}
+
+function maybeRegenJusticeAttempt(){
+  if(S.justiceAttemptsLeft < JUSTICE_MAX_ATTEMPTS && S.justiceCooldownUntil > 0 && S.day >= S.justiceCooldownUntil){
+    S.justiceAttemptsLeft += 1;
+    S.justiceCooldownUntil = S.justiceAttemptsLeft < JUSTICE_MAX_ATTEMPTS ? S.day + JUSTICE_COOLDOWN_DAYS : 0;
+  }
+}
+
+function maybeEvent(){
+  const roll = rand(1,100);
+  const threshold = S.suspicion;
+  if(roll <= threshold * 0.6){
+    const events = [
+      ()=>{
+        applyDelta({suspicion:10, evidence:-3, escapePlan:-3});
+        return `\n\nLIGHTS FLARE AT 3 A.M. — Cell search. They tear your mattress apart and find nothing, but the write-up goes in your file regardless. Both plans lose ground. (-3 Evidence, -3 Escape Plan, +10 Suspicion)`;
+      },
+      ()=>{
+        applyDelta({suspicion:8, trust:-4});
+        return `\n\nAn informant sells a rumor about you to the wrong guard. People start watching you differently. (-4 Trust, +8 Suspicion)`;
+      },
+      ()=>{
+        S.day += rand(3,7);
+        applyDelta({suspicion:15});
+        return `\n\nSANCTION — A contraband sweep names you as a suspect. You draw a week in solitary. The calendar moves without you. (+Days lost, +15 Suspicion)`;
+      }
+    ];
+    return pick(events)();
+  }
+  if(roll >= 96){
+    const good = [
+      ()=>{ applyDelta({trust:6}); return `\n\nA guard you helped months ago quietly vouches for you at shift briefing. (+6 Trust)`; },
+      ()=>{ applyDelta({escapePlan:6}); return `\n\nSomeone in the crew owes you and pays it forward with a tip on a blind spot. (+6 Escape Plan)`; },
+    ];
+    return pick(good)();
+  }
+  return "";
+}
+
+function maybeEvidenceChallenge(){
+  if(S.evidence < 30) return "";
+  const chance = 6 + (S.evidence/100)*14; // 6% at low evidence, up to ~20% near 100
+  if(rand(1,100) <= chance){
+    const loss = rand(6,14);
+    applyDelta({evidence:-loss});
+    return `\n\nPUSHBACK — The prosecution flags a hole in your new evidence and moves to have it excluded. The judge agrees to reconsider before ruling. (-${loss} Evidence)`;
+  }
+  return "";
+}
+
+// Connections previously only fed Escape (crew builds it, bribe spends it)
+// and only ever HURT Justice (the guard-overuse penalty). This gives it a
+// real, if secondary, Justice payoff too: once your prison network has any
+// real substance, it occasionally surfaces something usable for your case —
+// a name, a rumor with teeth, dirt on the arresting officer. Deliberately
+// rare and modest so it stays a bonus, not an alternate route to Evidence;
+// an Escape-focused player who happens to build Connections gets a nice
+// side effect, not a free second strategy. The threshold is intentionally
+// LOW (15, not e.g. 40) — under normal crew/scout/bribe rotation, bribe
+// keeps draining Connections back down almost as fast as crew builds it
+// (simulation showed a typical peak of ~20 under that rotation), so a
+// higher threshold would rarely or never trigger for a typical Escape
+// playthrough, defeating the point of giving Connections real dual-use.
+const CONNECTIONS_GRAPEVINE_THRESHOLD = 15;
+const GRAPEVINE_CHANCE = 15; // % per day, only once threshold is met
+
+function maybeGrapevineTip(){
+  if(S.connections < CONNECTIONS_GRAPEVINE_THRESHOLD) return "";
+  if(rand(1,100) <= GRAPEVINE_CHANCE){
+    const e = rand(4,9);
+    applyDelta({evidence:e});
+    return `\n\nWORD FROM THE YARD — Someone in your network passes along something real: a name, a grudge with details, a guard's disciplinary file the prosecutor hasn't found yet. It's not much on its own, but it's usable. (+${e} Evidence)`;
+  }
+  return "";
+}
+
+function tryAttemptEscape(){
+  const chance = computeEscapeChance();
+  S.escapeAttemptsUsed += 1;
+  const roll = rand(1,100);
+  if(roll <= chance){
+    S.over = true; S.ending = 'escape-win';
+  } else {
+    S.day += rand(10,25);
+    applyDelta({suspicion:100, escapePlan:-40, connections:-20});
+    S.log = `The tunnel map was three years out of date — they rerouted the pipe last winter. Caught at the fence line. It costs you dearly: weeks in solitary, your network gutted, every guard now watching your hands instead of your face. Worse — they've seen this move now. Next time will be harder.\n\nYou start rebuilding, if you choose to keep going.`;
+    renderAfterFail();
+    return;
+  }
+  render();
+}
+
+function tryPresentCase(){
+  if(S.justiceAttemptsLeft <= 0) return; // button should be disabled in this state; guard anyway
+  const chance = computeJusticeChance();
+  S.justiceAttemptsLeft -= 1;
+  if(S.justiceAttemptsLeft === 0) S.justiceCooldownUntil = S.day + JUSTICE_COOLDOWN_DAYS;
+  const roll = rand(1,100);
+  if(roll <= chance){
+    S.over = true; S.ending = 'justice-win';
+  } else {
+    applyDelta({suspicion:10, evidence:-10});
+    const remaining = S.justiceAttemptsLeft;
+    const remainingNote = remaining > 0
+      ? `You have ${remaining} hearing${remaining===1?'':'s'} left before you'll need to wait out a new one.`
+      : `That was your last scheduled hearing for now — the board won't see you again for a while.`;
+    S.log = `The parole board reads your file, glances at the disciplinary notes sitting beside your appeal, and denies it in four minutes flat. "Insufficient corroboration," the letter says. ${remainingNote}`;
+    render();
+    return;
+  }
+  render();
+}
+
+function renderAfterFail(){ render(); }
+
+function chooseAction(a){
+  if(S.over) return;
+  S.day += 1;
+  maybeRegenJusticeAttempt();
+
+  // ambient suspicion drift — time and routine scrutiny work against you regardless of choice
+  applyDelta({suspicion:2});
+
+  // diminishing returns for repeating the same move back-to-back
+  if(a.id === S.lastActionId){
+    S.actionStreak += 1;
+  } else {
+    S.actionStreak = 1;
+  }
+  S.lastActionId = a.id;
+  const mult = Math.max(0.5, 1 - 0.12*(S.actionStreak-1));
+
+  S.actionCounts[a.id] = (S.actionCounts[a.id] || 0) + 1;
+
+  let msg = a.run(mult);
+  msg += maybeGrapevineTip();
+  msg += maybeEvidenceChallenge();
+  msg += maybeEvent();
+  S.log = msg;
+  S.expandedCategory = null;
+  render();
+}
+
+function chooseCategory(catId){
+  const cat = CATEGORIES.find(c=>c.id===catId);
+  if(cat.actionIds.length === 1){
+    // single-action category: just run it directly, no need to expand
+    chooseAction(ACTIONS.find(x=>x.id===cat.actionIds[0]));
+    return;
+  }
+  S.expandedCategory = catId;
+  render();
+}
+
+function backToCategories(){
+  S.expandedCategory = null;
+  render();
+}
+
+function pulseClass(key, current){
+  const prev = prevStats[key];
+  if(prev === undefined || current === prev) return '';
+  if(key === 'suspicion') return current > prev ? 'pulse-warn' : 'pulse-up';
+  return current > prev ? 'pulse-up' : 'pulse-warn';
+}
+
+function statBlock(){
+  const html = `
+  <div class="stats">
+    <div class="stat"><div class="k">Trust</div><div class="v ${pulseClass('trust',S.trust)}">${S.trust}</div></div>
+    <div class="stat"><div class="k">Connections</div><div class="v ${pulseClass('connections',S.connections)}">${S.connections}</div></div>
+    <div class="stat ${S.suspicion>=60?'warn':''}"><div class="k">Suspicion</div><div class="v ${pulseClass('suspicion',S.suspicion)}">${S.suspicion}</div></div>
+  </div>`;
+  return html;
+}
+
+function gaugeBlock(){
+  return `
+  <div class="gauge-block">
+    <div class="gauge-labels"><span class="just ${pulseClass('evidence',S.evidence)}">EVIDENCE ${S.evidence}</span><span class="esc ${pulseClass('escapePlan',S.escapePlan)}">ESCAPE PLAN ${S.escapePlan}</span></div>
+    <div class="gauge">
+      <div class="gauge-fill-just" style="width:${S.evidence/2}%"></div>
+      <div class="gauge-fill-esc" style="width:${S.escapePlan/2}%"></div>
+      <div class="gauge-mid"></div>
+    </div>
+  </div>`;
+}
+
+function endingScreen(){
+  const wins = {
+    'escape-win': {
+      title:'OVER THE WALL',
+      body:`You're out — through a gap in the schedule nobody thought to fix. No pardon, no cleared name. Somewhere your file still says "guilty," and it always will unless you come back to answer for it. But tonight you're breathing air nobody's rationing.`
+    },
+    'justice-win': {
+      title:'CASE DISMISSED',
+      body:`The judge reads the new evidence into the record and sets it down without ceremony: "The court finds the original conviction cannot stand." No applause. Just a door that unlocks the ordinary way, and your name, finally, spelled correctly on the release paper.`
+    }
+  };
+  const w = wins[S.ending];
+  return `
+  <div class="ending">
+    <div class="section-label">Case No. 4471 — Closed</div>
+    <h2>${w.title}</h2>
+    <div class="days">${S.day}<span>DAYS FROM THIS MORNING TO THE GATE</span></div>
+    <p>${w.body}</p>
+    <p style="color:var(--ink-dim); font-size:12px; font-family:'Oswald',sans-serif; letter-spacing:1px; text-transform:uppercase; margin-top:14px;">Played as ${S.profile.name}</p>
+    <button class="restart" onclick="restart()">Play again as ${S.profile.name}</button>
+    <button class="restart" onclick="changeProfile()" style="margin-top:8px;">Choose a different character</button>
+  </div>`;
+}
+
+function resetGameState(){
+  S.day=1; S.trust=15; S.connections=15; S.evidence=5; S.escapePlan=5; S.suspicion=10;
+  S.over=false; S.ending=null; S.expandedCategory=null;
+  S.lastActionId=null; S.actionStreak=0;
+  S.actionCounts = { library:0, guard:0, letters:0, crew:0, scout:0, bribe:0, rest:0 };
+  S.justiceAttemptsLeft = JUSTICE_MAX_ATTEMPTS;
+  S.justiceCooldownUntil = 0;
+  S.escapeAttemptsUsed = 0;
+  S.pendingConfirm = null;
+  S.log = "New cell, same choice. You wake up on the concrete shelf they call a bunk. Nobody's listening yet. Today, you decide what kind of man gets you out.";
+  prevStats = { trust:S.trust, connections:S.connections, evidence:S.evidence, escapePlan:S.escapePlan, suspicion:S.suspicion };
+}
+
+function restart(){
+  // keeps the current profile — a fresh case, same character
+  resetGameState();
+  clearSave();
+  render();
+}
+
+function changeProfile(){
+  // fresh case AND a fresh character — back to profile selection
+  resetGameState();
+  S.profile = null;
+  clearSave();
+  render();
+}
+
+function confirmRestart(){
+  // Native confirm()/alert()/prompt() dialogs are blocked or silently
+  // no-op in several real-world contexts this file can end up running in
+  // (sandboxed previews, some embedded webviews) — relying on confirm()
+  // meant the button would just do nothing there, with no visible error.
+  // This shows an in-page confirmation instead, using the same render()
+  // pipeline as everything else, so it works identically everywhere.
+  S.pendingConfirm = 'restart';
+  render();
+}
+
+function confirmChangeProfile(){
+  S.pendingConfirm = 'changeProfile';
+  render();
+}
+
+function cancelPendingConfirm(){
+  S.pendingConfirm = null;
+  render();
+}
+
+function executePendingConfirm(){
+  if(S.pendingConfirm === 'restart') restart();
+  else if(S.pendingConfirm === 'changeProfile') changeProfile();
+}
+
+function selectProfile(id){
+  S.profile = PROFILES.find(p=>p.id===id);
+  saveState();
+  render();
+}
+
+function render(){
+  const app = document.getElementById('app');
+  if(S.over){
+    app.innerHTML = `
+      <div class="masthead">
+        <div><h1>Two Ways Out</h1><div class="case">CASE NO. 4471</div></div>
+      </div>
+      ${endingScreen()}
+    `;
+    clearSave();
+    return;
+  }
+
+  if(!S.profile){
+    app.innerHTML = `
+      <div class="masthead">
+        <div><h1>Two Ways Out</h1><div class="case">CASE NO. 4471</div></div>
+      </div>
+      <div class="section-label">Who are you, in here?</div>
+      <div class="actions">
+        ${PROFILES.map(p=>`
+          <button class="category" onclick="selectProfile('${p.id}')">
+            ${p.name}
+            <span class="desc">${p.tagline}<br>${p.desc}<br>INT ${p.stats.intellect} · PHY ${p.stats.physique} · CHA ${p.stats.charisma} · COM ${p.stats.composure}</span>
+          </button>
+        `).join('')}
+      </div>
+    `;
+    saveState();
+    return;
+  }
+
+  maybeRegenJusticeAttempt();
+
+  const justiceChance = computeJusticeChance();
+  const escapeChance = computeEscapeChance();
+  const canJustice = S.day >= MIN_JUSTICE_DAY && S.justiceAttemptsLeft > 0;
+  // Escape has no gate at all — it's always attemptable; odds alone communicate readiness.
+
+  let justiceDisabledReason = '';
+  if(S.day < MIN_JUSTICE_DAY) justiceDisabledReason = `— no hearing scheduled before day ${MIN_JUSTICE_DAY}`;
+  else if(S.justiceAttemptsLeft <= 0) justiceDisabledReason = `— next hearing available day ${S.justiceCooldownUntil}`;
+
+  let movesHtml;
+  if(S.expandedCategory){
+    const cat = CATEGORIES.find(c=>c.id===S.expandedCategory);
+    const subActions = ACTIONS.filter(a=>cat.actionIds.includes(a.id));
+    movesHtml = `
+      <button class="back-btn" onclick="backToCategories()">&larr; Back</button>
+      <div class="actions">
+        ${subActions.map(a=>`
+          <button class="action ${a.side==='esc'?'esc':''}" onclick="chooseAction(ACTIONS.find(x=>x.id==='${a.id}'))">
+            ${a.label}
+            <span class="desc">${a.desc}</span>
+          </button>
+        `).join('')}
+      </div>`;
+  } else {
+    movesHtml = `
+      <div class="actions">
+        ${CATEGORIES.map(c=>`
+          <button class="category ${c.side==='esc'?'esc':(c.side==='neutral'?'neutral':'')}" onclick="chooseCategory('${c.id}')">
+            ${c.label}
+            <span class="desc">${c.desc}</span>
+          </button>
+        `).join('')}
+      </div>`;
+  }
+
+  app.innerHTML = `
+    <div class="masthead">
+      <div><h1>Two Ways Out</h1><div class="case">CASE NO. 4471 &middot; ${S.profile.name.toUpperCase()}</div><button class="restart-link" onclick="confirmRestart()">Abandon case &amp; restart</button><button class="restart-link" onclick="confirmChangeProfile()">Change character</button></div>
+      <div class="day-badge">${S.day}<span>DAY</span></div>
+    </div>
+
+    ${S.pendingConfirm ? `
+    <div class="confirm-banner">
+      <div class="msg">${S.pendingConfirm === 'restart'
+        ? 'Abandon this case and start over with the same character? Your current progress will be lost.'
+        : 'Abandon this case and pick a different character? Your current progress will be lost.'}</div>
+      <div class="btns">
+        <button class="confirm-yes" onclick="executePendingConfirm()">Yes, ${S.pendingConfirm === 'restart' ? 'restart' : 'change character'}</button>
+        <button onclick="cancelPendingConfirm()">Cancel</button>
+      </div>
+    </div>` : ''}
+
+    ${gaugeBlock()}
+    ${statBlock()}
+
+    <div class="log"><span class="tag">LOG</span>${S.log}</div>
+
+    <div class="section-label">${S.expandedCategory ? 'Choose your move' : "Today's move"}</div>
+    ${movesHtml}
+
+    ${S.expandedCategory ? '' : `
+    <div class="section-label">When you're ready</div>
+    <div class="actions">
+      <button class="action attempt" ${canJustice?'':'disabled'} onclick="tryPresentCase()">
+        Present your case to the parole board
+        <span class="desc">Feels ${confidenceLabel(justiceChance)} ${justiceDisabledReason || `· ${S.justiceAttemptsLeft} hearing${S.justiceAttemptsLeft===1?'':'s'} available`}</span>
+      </button>
+      <button class="action attempt esc" onclick="tryAttemptEscape()">
+        Attempt the escape tonight
+        <span class="desc">Feels ${confidenceLabel(escapeChance)}${S.escapeAttemptsUsed>0 ? ` · they're onto your patterns after ${S.escapeAttemptsUsed} attempt${S.escapeAttemptsUsed===1?'':'s'}` : ''}</span>
+      </button>
+    </div>`}
+  `;
+
+  prevStats = { trust:S.trust, connections:S.connections, evidence:S.evidence, escapePlan:S.escapePlan, suspicion:S.suspicion };
+  saveState();
+}
+
+loadState();
+render();
+</script>
+</body>
+</html>
