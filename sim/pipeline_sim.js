@@ -181,10 +181,16 @@ const ACTIONS = {
   }
 };
 
-const MIN_JUSTICE_DAY = 21;
 const JUSTICE_MAX_ATTEMPTS = 3;
 const JUSTICE_COOLDOWN_DAYS = 25;
 const ESCAPE_ESCALATION_PENALTY = 8;
+
+// Mirrors underpreparedMult() / JUSTICE_FAIL_EXTRA_DAYS_BASE in index.html —
+// see that file for the rationale.
+function underpreparedMult(chance){
+  return Math.max(1, Math.min(2.5, 1 + (40 - chance) / 40 * 1.5));
+}
+const JUSTICE_FAIL_EXTRA_DAYS_BASE = 12;
 
 function computeJusticeChance(S){
   const intFactor = (S.profile.stats.intellect - 50) * 0.006;
@@ -264,7 +270,8 @@ function newState(profile, scenario){
     actionCounts: { library:0, guard:0, letters:0, crew:0, scout:0, bribe:0, rest:0 },
     justiceAttemptsLeft: JUSTICE_MAX_ATTEMPTS,
     justiceCooldownUntil: 0,
-    escapeAttemptsUsed: 0
+    escapeAttemptsUsed: 0,
+    justiceAttemptsUsed: 0
   };
 }
 
@@ -284,6 +291,7 @@ function runAction(S, id){
 
 function tryPresentCase(S){
   if(S.justiceAttemptsLeft <= 0) return;
+  S.day += 1; // attempting IS the day's action
   const chance = computeJusticeChance(S);
   S.justiceAttemptsLeft -= 1;
   if(S.justiceAttemptsLeft === 0) S.justiceCooldownUntil = S.day + JUSTICE_COOLDOWN_DAYS;
@@ -291,19 +299,30 @@ function tryPresentCase(S){
   if(roll <= chance){
     S.over = true; S.ending = 'justice-win';
   } else {
-    applyDelta(S, {suspicion:10, evidence:-10});
+    const mult = underpreparedMult(chance);
+    const credibilityFactor = rampEfficiency(S.lawyer, S.scenario.scrutiny.lawyerThreshold, 0.55);
+    const attemptDiscount = Math.max(0.6, 1 - 0.15 * S.justiceAttemptsUsed);
+    const extraDays = Math.round(JUSTICE_FAIL_EXTRA_DAYS_BASE * credibilityFactor * attemptDiscount);
+    S.justiceAttemptsUsed += 1;
+    S.day += extraDays;
+    applyDelta(S, {suspicion:Math.round(10*mult), evidence:-Math.round(10*mult)});
   }
 }
 
 function tryAttemptEscape(S){
+  S.day += 1; // attempting IS the day's action
   const chance = computeEscapeChance(S);
-  S.escapeAttemptsUsed += 1;
   const roll = rand(1,100);
   if(roll <= chance){
     S.over = true; S.ending = 'escape-win';
   } else {
-    S.day += rand(10,25);
-    applyDelta(S, {suspicion:100, escapePlan:-40, connections:-20});
+    const mult = underpreparedMult(chance);
+    const baseDays = rand(10,25);
+    const escalationDays = S.escapeAttemptsUsed * 5;
+    const totalDays = Math.min(60, baseDays + escalationDays);
+    S.escapeAttemptsUsed += 1;
+    S.day += totalDays;
+    applyDelta(S, {suspicion:Math.round(100*mult), escapePlan:-Math.round(40*mult), connections:-Math.round(20*mult)});
   }
 }
 
@@ -336,7 +355,7 @@ const ESCAPE_BOT_REST_SUSPICION = 65;
 
 function justiceGreedyStep(S, cyclePos){
   maybeRegenJusticeAttempt(S);
-  if(S.day >= MIN_JUSTICE_DAY && S.justiceAttemptsLeft > 0 && computeJusticeChance(S) >= JUSTICE_BOT_ATTEMPT_THRESHOLD){
+  if(S.justiceAttemptsLeft > 0 && computeJusticeChance(S) >= JUSTICE_BOT_ATTEMPT_THRESHOLD){
     tryPresentCase(S);
     return cyclePos;
   }
@@ -364,7 +383,7 @@ function escapeGreedyStep(S, cyclePos){
   return cyclePos + 1;
 }
 
-function simulateOne(profileId, scenarioId, strategy){
+function simulateOneState(profileId, scenarioId, strategy){
   const profile = PROFILES.find(p=>p.id===profileId);
   const scenario = SCENARIOS.find(s=>s.id===scenarioId);
   const S = newState(profile, scenario);
@@ -373,7 +392,11 @@ function simulateOne(profileId, scenarioId, strategy){
   while(!S.over && S.day < maxDays){
     cyclePos = strategy === 'justice' ? justiceGreedyStep(S, cyclePos) : escapeGreedyStep(S, cyclePos);
   }
-  return S.ending || 'timeout';
+  return S;
+}
+
+function simulateOne(profileId, scenarioId, strategy){
+  return simulateOneState(profileId, scenarioId, strategy).ending || 'timeout';
 }
 
 function runBatch(profileId, scenarioId, strategy, n){
@@ -383,6 +406,105 @@ function runBatch(profileId, scenarioId, strategy, n){
     wins[ending] += 1;
   }
   return wins;
+}
+
+// ---------------------------------------------------------------------
+// Grading — mirrors computeGrade()/letterForScore() in index.html, so the
+// letter-band boundaries and difficulty ceiling can be validated against
+// simulated playthroughs before shipping. See index.html for rationale.
+// ---------------------------------------------------------------------
+const PAR_DAYS = { easy:20, normal:25, hard:28, veryhard:32 };
+const DIFFICULTY_MULTIPLIER = { easy:0.85, normal:1.0, hard:1.15, veryhard:1.3 };
+const DIFFICULTY_CEILING = { easy:'B-', normal:'B+', hard:'A-', veryhard:null };
+const GRADE_ORDER = ['F','D','C-','C','C+','B-','B','B+','A-','A','A+'];
+const PATH_LEAN = {
+  strategist:  { strong:'justice', weak:'escape' },
+  giant:       { strong:'escape',  weak:'justice' },
+  manipulator: { strong:'justice', weak:'escape' },
+  everyman:    null
+};
+
+function letterForScore(rawScore){
+  if(rawScore >= 140) return 'A+';
+  if(rawScore >= 120) return 'A';
+  if(rawScore >= 105) return 'A-';
+  if(rawScore >= 90)  return 'B+';
+  if(rawScore >= 75)  return 'B';
+  if(rawScore >= 60)  return 'B-';
+  if(rawScore >= 45)  return 'C+';
+  if(rawScore >= 30)  return 'C';
+  if(rawScore >= 15)  return 'C-';
+  if(rawScore >= 0)   return 'D';
+  return 'F';
+}
+
+function computeGrade(S){
+  const scenarioId = S.scenario.id;
+  const winPath = S.ending === 'justice-win' ? 'justice' : 'escape';
+  const par = PAR_DAYS[scenarioId];
+  const efficiency = Math.min(100, Math.round(100 * par / S.day));
+  const lean = PATH_LEAN[S.profile.id];
+  const pathFit = lean ? (winPath === lean.strong ? -15 : 15) : 0;
+  const justiceBonus = winPath === 'justice' ? 10 : 0;
+  const attemptPenalty = 6 * (S.justiceAttemptsUsed + S.escapeAttemptsUsed);
+  const difficultyMultiplier = DIFFICULTY_MULTIPLIER[scenarioId];
+  const rawScore = (efficiency + pathFit + justiceBonus - attemptPenalty) * difficultyMultiplier;
+
+  let letter = letterForScore(rawScore);
+  const ceiling = DIFFICULTY_CEILING[scenarioId];
+  if(ceiling && GRADE_ORDER.indexOf(letter) > GRADE_ORDER.indexOf(ceiling)) letter = ceiling;
+
+  const elite = scenarioId === 'veryhard' && !!lean && winPath === lean.weak &&
+    S.justiceAttemptsUsed === 0 && S.escapeAttemptsUsed === 0;
+
+  return { letter, rawScore, elite };
+}
+
+// Grades only the runs that actually won via the strategy's intended path
+// (a bot can time out, which isn't a graded ending).
+function runGradeBatch(profileId, scenarioId, strategy, n){
+  const dist = {}; GRADE_ORDER.forEach(l => dist[l] = 0);
+  const wantEnding = strategy === 'justice' ? 'justice-win' : 'escape-win';
+  let winCount = 0, eliteCount = 0, scoreSum = 0;
+  for(let i=0;i<n;i++){
+    const S = simulateOneState(profileId, scenarioId, strategy);
+    if(S.ending !== wantEnding) continue;
+    const grade = computeGrade(S);
+    dist[grade.letter] += 1;
+    if(grade.elite) eliteCount += 1;
+    scoreSum += grade.rawScore;
+    winCount += 1;
+  }
+  return { dist, winCount, eliteCount, avgScore: winCount ? scoreSum / winCount : null };
+}
+
+function printGradeReport(){
+  const N = 300;
+  console.log(`\nGrade distribution — ${N} playthroughs per profile x scenario x path (graded on actual wins only)...\n`);
+  const overall = {}; GRADE_ORDER.forEach(l => overall[l] = 0);
+  let overallElite = 0, overallWins = 0;
+  for(const scenario of SCENARIOS){
+    for(const profile of PROFILES){
+      for(const strategy of ['justice','escape']){
+        const { dist, winCount, eliteCount, avgScore } = runGradeBatch(profile.id, scenario.id, strategy, N);
+        if(winCount === 0){
+          console.log(`${scenario.id.padEnd(10)}${profile.name.padEnd(16)}${strategy.padEnd(8)} no wins in ${N} runs`);
+          continue;
+        }
+        const distStr = GRADE_ORDER.slice().reverse().filter(l => dist[l] > 0).map(l => `${l}:${dist[l]}`).join(' ');
+        console.log(`${scenario.id.padEnd(10)}${profile.name.padEnd(16)}${strategy.padEnd(8)} wins=${String(winCount).padEnd(5)} avgScore=${avgScore.toFixed(1).padEnd(7)} elite=${eliteCount}  [${distStr}]`);
+        for(const l of GRADE_ORDER) overall[l] += dist[l];
+        overallElite += eliteCount;
+        overallWins += winCount;
+      }
+    }
+    console.log('');
+  }
+  console.log(`Overall grade histogram across all combos (${overallWins} total graded wins, ${overallElite} Elite):`);
+  for(const l of GRADE_ORDER.slice().reverse()){
+    const pct = overallWins ? (overall[l] / overallWins * 100).toFixed(1) : '0.0';
+    console.log(`  ${l.padEnd(3)} ${String(overall[l]).padStart(5)}  (${pct}%)`);
+  }
 }
 
 function main(){
@@ -399,11 +521,13 @@ function main(){
     }
     console.log('');
   }
+  printGradeReport();
 }
 
 if(require.main === module) main();
 
 module.exports = {
   PROFILES, SCENARIOS, rampEfficiency, applyDelta, computeJusticeChance, computeEscapeChance,
-  newState, runAction, tryPresentCase, tryAttemptEscape, simulateOne, runBatch
+  newState, runAction, tryPresentCase, tryAttemptEscape, simulateOne, simulateOneState, runBatch,
+  computeGrade, runGradeBatch
 };
