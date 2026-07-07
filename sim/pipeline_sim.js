@@ -455,7 +455,7 @@ function computeGrade(S){
   if(ceiling && GRADE_ORDER.indexOf(letter) > GRADE_ORDER.indexOf(ceiling)) letter = ceiling;
 
   const elite = scenarioId === 'veryhard' && !!lean && winPath === lean.weak &&
-    S.justiceAttemptsUsed === 0 && S.escapeAttemptsUsed === 0;
+    S.justiceAttemptsUsed === 0 && S.escapeAttemptsUsed === 0 && rawScore >= 120;
 
   return { letter, rawScore, elite };
 }
