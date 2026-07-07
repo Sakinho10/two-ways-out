@@ -211,6 +211,7 @@ const S = {
   expandedCategory: null,
   lastActionId: null,
   actionStreak: 0,
+  scenario: null,
   profile: null,
   actionCounts: { library:0, guard:0, letters:0, crew:0, scout:0, bribe:0, rest:0 },
   justiceAttemptsLeft: 3,
@@ -278,12 +279,80 @@ const PROFILES = [
   }
 ];
 
+// Difficulty scenarios select the wrongful-conviction premise BEFORE profile
+// select, and shift difficulty ASYMMETRICALLY across the Justice and Escape
+// paths rather than applying one global multiplier. Three levers, each read
+// by name from the current S.scenario wherever the underlying formula lives
+// (rampEfficiency, applyDelta, computeJusticeChance, computeEscapeChance,
+// the guard action, maybeEvent) — nothing scenario-specific is hardcoded
+// inline in render()/chooseAction().
+//
+//   security  — throttles the Escape path: suspicionMult scales every
+//               positive suspicion gain, planMult scales every positive
+//               escapePlan gain, escalationMult scales
+//               ESCAPE_ESCALATION_PENALTY, guardHostility makes the guard
+//               action land worse/less reliably (Hard/Very Hard only).
+//   scrutiny  — throttles the Lawyer/Media stages of the Credibility
+//               pipeline specifically (never Family): raises the
+//               rampEfficiency threshold, lowers its floor, and discounts
+//               the milestone bonus those two stages add to pipelineBonus.
+//   family    — sets starting `family` and its growth rate/ceiling; Hard
+//               keeps normal starting capital but slows growth (visits
+//               monitored), Very Hard both slows growth AND caps the
+//               ceiling low (even a perfect family can't fully fix it).
+//
+// NORMAL is the existing tuned baseline (all three neutral / 1.0x) — see
+// sim/pipeline_sim.js and README "Difficulty Scenarios" for the validated
+// win-rate shape across all 4 profiles x 4 scenarios.
+const SCENARIOS = [
+  {
+    id:'easy', tier:'Easy', name:'The Robbery',
+    tagline:"Nobody's watching this case.",
+    intro:"You wake up on the concrete shelf they call a bunk. Forty-one dollars and a corner-store clerk's shaky finger put you here — a robbery you didn't commit, one of a few hundred just like it processed that month. Nobody upstairs remembers your name yet. Today, you decide what kind of man gets you out.",
+    security:{ suspicionMult:0.8, planMult:1.15, escalationMult:0.8, guardHostility:1.0 },
+    scrutiny:0.8,
+    family:{ start:20, growthMult:1.15, cap:100 },
+    hasMediaFlareups:false
+  },
+  {
+    id:'normal', tier:'Normal', name:"Your Wife's Murder",
+    tagline:'The standard nightmare.',
+    intro:"You wake up on the concrete shelf they call a bunk. Four hundred and some days since they brought you in for your wife's murder — a crime you didn't commit, though nobody outside these walls believes that yet. The case file is thick and getting thicker. Today, you decide what kind of man gets you out.",
+    security:{ suspicionMult:1.0, planMult:1.0, escalationMult:1.0, guardHostility:1.0 },
+    scrutiny:1.0,
+    family:{ start:15, growthMult:1.0, cap:100 },
+    hasMediaFlareups:false
+  },
+  {
+    id:'hard', tier:'Hard', name:'Officer Down',
+    tagline:'The building has a badge in common with him.',
+    intro:"You wake up on the concrete shelf they call a bunk. Officer Delgado's badge number is stenciled on a memorial wall two blocks from the courthouse, and half the men who walk your tier wore the same uniform before they walked away from it. You didn't pull the trigger, but try telling that to a guard who buried a friend. Today, you decide what kind of man gets you out — if the building lets you.",
+    security:{ suspicionMult:1.3, planMult:0.8, escalationMult:1.3, guardHostility:1.6 },
+    scrutiny:1.5,
+    family:{ start:15, growthMult:0.65, cap:100 },
+    hasMediaFlareups:false
+  },
+  {
+    id:'veryhard', tier:'Very Hard', name:'The Senator',
+    tagline:'The whole country has an opinion about your guilt.',
+    intro:"You wake up on the concrete shelf they call a bunk. Senator Whitfield's funeral was broadcast live to eleven million people, and every one of them thinks they know your face from the footage. Reporters camp outside the visitation room; the DA holds press conferences about a case that isn't even his anymore. You didn't do it, but the whole country has already decided otherwise. Today, you decide what kind of man gets you out.",
+    security:{ suspicionMult:1.4, planMult:0.75, escalationMult:1.4, guardHostility:1.75 },
+    scrutiny:2.0,
+    family:{ start:15, growthMult:0.55, cap:60 },
+    pipelineBonusCap:6.5,
+    hasMediaFlareups:true
+  }
+];
+
 // Soft-gated pipeline ramp: a stage always produces SOMETHING even when the
 // stage feeding it is at 0 (the floor), scaling up to full efficiency once
 // the feeder stage crosses its threshold. Family itself is never gated —
 // only Lawyer (off Family) and Media (off Lawyer) ramp this way.
 function rampEfficiency(source, threshold, floor){
-  return floor + (1 - floor) * Math.min(1, source / threshold);
+  const scrutiny = S.scenario ? S.scenario.scrutiny : 1;
+  const adjThreshold = threshold * scrutiny;
+  const adjFloor = floor / scrutiny;
+  return adjFloor + (1 - adjFloor) * Math.min(1, source / adjThreshold);
 }
 const FAMILY_THRESHOLD = 30, LAWYER_FLOOR = 0.2; // gates Lawyer efficiency
 const LAWYER_THRESHOLD = 40, MEDIA_FLOOR = 0.15; // gates Media efficiency
@@ -305,28 +374,46 @@ const MILESTONES = [
 ];
 
 function checkMilestones(){
+  const scen = S.scenario;
+  const cap = (scen && scen.pipelineBonusCap != null) ? scen.pipelineBonusCap : Infinity;
   for(const m of MILESTONES){
     const key = m.stage + m.at;
     if(!S.pipelineMilestones[key] && S[m.stage] >= m.at){
       S.pipelineMilestones[key] = true;
-      S.pipelineBonus += m.bonus;
+      // scrutiny throttles Lawyer/Media specifically — Family milestones are never discounted
+      const bonus = (scen && m.stage !== 'family') ? m.bonus / scen.scrutiny : m.bonus;
+      S.pipelineBonus = Math.min(cap, S.pipelineBonus + bonus);
       S.log += `\n\n${m.text}`;
     }
   }
 }
 
 function applyDelta(d){
-  if(d.family) S.family = clamp(S.family + d.family);
+  const scen = S.scenario;
+  if(d.family){
+    // family support sets both the growth rate off actions and a hard ceiling
+    // (Very Hard: even a perfect family can't fully fix it) — never the floor
+    let fam = d.family;
+    if(scen && fam > 0) fam *= scen.family.growthMult;
+    const famCap = scen ? scen.family.cap : 100;
+    S.family = Math.max(0, Math.min(famCap, S.family + fam));
+  }
   if(d.lawyer) S.lawyer = clamp(S.lawyer + d.lawyer);
   if(d.media) S.media = clamp(S.media + d.media);
   if(d.connections) S.connections = clamp(S.connections + d.connections);
   if(d.evidence) S.evidence = clamp(S.evidence + d.evidence);
-  if(d.escapePlan) S.escapePlan = clamp(S.escapePlan + d.escapePlan);
+  if(d.escapePlan){
+    // security throttles how fast the escape plan comes together
+    let p = d.escapePlan;
+    if(scen && p > 0) p *= scen.security.planMult;
+    S.escapePlan = clamp(S.escapePlan + p);
+  }
   if(d.suspicion){
     let s = d.suspicion;
-    // composure only softens INCREASES in suspicion, never the relief from resting
-    if(s > 0 && S.profile){ s = Math.round(s * composureFactor(S.profile.stats.composure)); }
-    S.suspicion = clamp(S.suspicion + s);
+    // composure and facility security only soften INCREASES in suspicion, never the relief from resting
+    if(s > 0 && S.profile){ s *= composureFactor(S.profile.stats.composure); }
+    if(s > 0 && scen){ s *= scen.security.suspicionMult; }
+    S.suspicion = clamp(S.suspicion + Math.round(s));
   }
   checkMilestones();
 }
@@ -362,17 +449,25 @@ const ACTIONS = [
     desc:'+Family, small +Evidence chance, rare +Media chance · weaker if repeated, and too many favors makes you look like a sucker',
     run(mult=1){
       const chaFactor = statFactor(S.profile.stats.charisma);
+      // a hostile facility (Hard/Very Hard) makes the guard action land worse and
+      // less reliably, not just a flat suspicion tax — see security.guardHostility
+      const hostility = S.scenario ? S.scenario.security.guardHostility : 1;
       const fam = Math.round(rand(5,9)*mult*chaFactor);
       applyDelta({family:fam});
       let text;
-      if(Math.random()<0.4){
+      if(Math.random() < 0.4/hostility){
         const e = Math.round(rand(3,7)*mult*chaFactor);
         applyDelta({evidence:e});
         text = `You cover for a rookie guard who forgot to log a headcount, no questions asked. Grateful, he lets slip that the arresting officer on your case has a disciplinary file of his own. (+${fam} Family, +${e} Evidence)`;
       } else {
         text = `You keep an eye out for a guard who's been decent to you, warning him before a surprise walkthrough. He owes you now, even if he'd never say it out loud. (+${fam} Family)`;
+        if(hostility > 1 && Math.random() < 0.25){
+          const extra = rand(3,6);
+          applyDelta({suspicion:extra});
+          text += `\n\nThis one isn't like the guards who've helped you before. He clocks the approach and makes a note in your file instead of a mental one. (+${extra} Suspicion — this guard isn't playing along)`;
+        }
       }
-      if(Math.random() < 0.15){
+      if(Math.random() < 0.15/hostility){
         const mediaEff = rampEfficiency(S.lawyer, LAWYER_THRESHOLD, MEDIA_FLOOR);
         const med = Math.round(rand(1,3)*mult*chaFactor*mediaEff);
         if(med > 0){
@@ -380,9 +475,10 @@ const ACTIONS = [
           text += `\n\nSomeone in the guard's orbit talks a little too freely off shift, and word travels further than he meant it to. (+${med} Media)`;
         }
       }
-      const overuse = S.actionCounts.guard - GUARD_CONNECTIONS_THRESHOLD;
+      const effectiveThreshold = GUARD_CONNECTIONS_THRESHOLD / hostility;
+      const overuse = S.actionCounts.guard - effectiveThreshold;
       if(overuse > 0){
-        const connLoss = overuse * 2;
+        const connLoss = Math.round(overuse * 2 * hostility);
         applyDelta({connections:-connLoss});
         text += `\n\nWord's gotten around the block that you're cozy with the staff. Nobody says it to your face, but favors stop coming your way, and a couple of guys go out of their way to make your day longer. (-${connLoss} Connections — they've made you as a guard's pet)`;
       }
@@ -506,7 +602,8 @@ function computeJusticeChance(){
 
 function computeEscapeChance(){
   const physFactor = (S.profile.stats.physique - 50) * 0.006;
-  const escalation = S.escapeAttemptsUsed * ESCAPE_ESCALATION_PENALTY;
+  const escalationPenalty = S.scenario ? ESCAPE_ESCALATION_PENALTY * S.scenario.security.escalationMult : ESCAPE_ESCALATION_PENALTY;
+  const escalation = S.escapeAttemptsUsed * escalationPenalty;
   const raw = 3 + S.escapePlan * (0.85 + physFactor) - S.suspicion * 0.35 - escalation;
   return Math.max(1, Math.min(95, raw));
 }
@@ -529,7 +626,25 @@ function maybeRegenJusticeAttempt(){
   }
 }
 
+// Very Hard only: national-scale media attention creates its own volatility,
+// independent of the day's action or current suspicion level — a tabloid
+// cycle can flare up on a quiet day just as easily as a busy one. This is
+// what makes Very Hard distinct from "Hard but bigger numbers" rather than
+// just a heavier throttle on the same curve.
+const MEDIA_FLAREUP_CHANCE = 5; // % per day, Very Hard only
+
+function maybeMediaFlareup(){
+  if(!S.scenario || !S.scenario.hasMediaFlareups) return "";
+  if(rand(1,100) > MEDIA_FLAREUP_CHANCE) return "";
+  const susp = rand(6,14);
+  const bonusLoss = Math.min(S.pipelineBonus, +(rand(5,15)/10).toFixed(1));
+  applyDelta({suspicion:susp});
+  S.pipelineBonus = +(S.pipelineBonus - bonusLoss).toFixed(2);
+  return `\n\nTABLOID CYCLE — A cable panel spends its Tuesday slot re-litigating your case for the cameras. None of it is new, all of it is loud, and your lawyer spends the morning on the phone with reporters instead of your appeal. (+${susp} Suspicion, -${bonusLoss} on your standing with the board)`;
+}
+
 function maybeEvent(){
+  let text = "";
   const roll = rand(1,100);
   const threshold = S.suspicion;
   if(roll <= threshold * 0.6){
@@ -548,16 +663,16 @@ function maybeEvent(){
         return `\n\nSANCTION — A contraband sweep names you as a suspect. You draw a week in solitary. The calendar moves without you. (+Days lost, +15 Suspicion)`;
       }
     ];
-    return pick(events)();
-  }
-  if(roll >= 96){
+    text += pick(events)();
+  } else if(roll >= 96){
     const good = [
       ()=>{ applyDelta({lawyer:6}); return `\n\nA guard you helped months ago quietly vouches for you at shift briefing — word reaches the parole board's liaison, not just the guard's shift log. (+6 Lawyer)`; },
       ()=>{ applyDelta({escapePlan:6}); return `\n\nSomeone in the crew owes you and pays it forward with a tip on a blind spot. (+6 Escape Plan)`; },
     ];
-    return pick(good)();
+    text += pick(good)();
   }
-  return "";
+  text += maybeMediaFlareup();
+  return text;
 }
 
 function maybeEvidenceChallenge(){
@@ -732,14 +847,17 @@ function endingScreen(){
     <h2>${w.title}</h2>
     <div class="days">${S.day}<span>DAYS FROM THIS MORNING TO THE GATE</span></div>
     <p>${w.body}</p>
-    <p style="color:var(--ink-dim); font-size:12px; font-family:'Oswald',sans-serif; letter-spacing:1px; text-transform:uppercase; margin-top:14px;">Played as ${S.profile.name}</p>
+    <p style="color:var(--ink-dim); font-size:12px; font-family:'Oswald',sans-serif; letter-spacing:1px; text-transform:uppercase; margin-top:14px;">Played as ${S.profile.name} &middot; ${S.scenario.tier}</p>
     <button class="restart" onclick="restart()">Play again as ${S.profile.name}</button>
     <button class="restart" onclick="changeProfile()" style="margin-top:8px;">Choose a different character</button>
+    <button class="restart" onclick="changeScenario()" style="margin-top:8px;">Change difficulty</button>
   </div>`;
 }
 
 function resetGameState(){
-  S.day=1; S.family=15; S.lawyer=0; S.media=0; S.pipelineMilestones={}; S.pipelineBonus=0;
+  const scen = S.scenario;
+  S.day=1; S.family = scen ? scen.family.start : 15; S.lawyer=0; S.media=0;
+  S.pipelineMilestones={}; S.pipelineBonus=0;
   S.connections=15; S.evidence=5; S.escapePlan=5; S.suspicion=10;
   S.over=false; S.ending=null; S.expandedCategory=null;
   S.lastActionId=null; S.actionStreak=0;
@@ -748,21 +866,30 @@ function resetGameState(){
   S.justiceCooldownUntil = 0;
   S.escapeAttemptsUsed = 0;
   S.pendingConfirm = null;
-  S.log = "New cell, same choice. You wake up on the concrete shelf they call a bunk. Nobody's listening yet. Today, you decide what kind of man gets you out.";
+  S.log = scen ? scen.intro : "New cell, same choice. You wake up on the concrete shelf they call a bunk. Nobody's listening yet. Today, you decide what kind of man gets you out.";
   prevStats = { connections:S.connections, evidence:S.evidence, escapePlan:S.escapePlan, suspicion:S.suspicion };
 }
 
 function restart(){
-  // keeps the current profile — a fresh case, same character
+  // keeps the current scenario and profile — a fresh case, same premise, same character
   resetGameState();
   clearSave();
   render();
 }
 
 function changeProfile(){
-  // fresh case AND a fresh character — back to profile selection
+  // fresh case AND a fresh character, but keeps the current scenario — back to profile selection
   resetGameState();
   S.profile = null;
+  clearSave();
+  render();
+}
+
+function changeScenario(){
+  // all the way back to the start: fresh case, fresh character, fresh premise
+  S.scenario = null;
+  S.profile = null;
+  resetGameState();
   clearSave();
   render();
 }
@@ -783,6 +910,11 @@ function confirmChangeProfile(){
   render();
 }
 
+function confirmChangeScenario(){
+  S.pendingConfirm = 'changeScenario';
+  render();
+}
+
 function cancelPendingConfirm(){
   S.pendingConfirm = null;
   render();
@@ -791,6 +923,14 @@ function cancelPendingConfirm(){
 function executePendingConfirm(){
   if(S.pendingConfirm === 'restart') restart();
   else if(S.pendingConfirm === 'changeProfile') changeProfile();
+  else if(S.pendingConfirm === 'changeScenario') changeScenario();
+}
+
+function selectScenario(id){
+  S.scenario = SCENARIOS.find(s=>s.id===id);
+  resetGameState();
+  saveState();
+  render();
 }
 
 function selectProfile(id){
@@ -812,10 +952,29 @@ function render(){
     return;
   }
 
-  if(!S.profile){
+  if(!S.scenario){
     app.innerHTML = `
       <div class="masthead">
         <div><h1>Two Ways Out</h1><div class="case">CASE NO. 4471</div></div>
+      </div>
+      <div class="section-label">What are you in for?</div>
+      <div class="actions">
+        ${SCENARIOS.map(sc=>`
+          <button class="category" onclick="selectScenario('${sc.id}')">
+            ${sc.tier} &mdash; ${sc.name}
+            <span class="desc">${sc.tagline}<br><br>${sc.intro}</span>
+          </button>
+        `).join('')}
+      </div>
+    `;
+    saveState();
+    return;
+  }
+
+  if(!S.profile){
+    app.innerHTML = `
+      <div class="masthead">
+        <div><h1>Two Ways Out</h1><div class="case">CASE NO. 4471 &middot; ${S.scenario.tier.toUpperCase()}</div></div>
       </div>
       <div class="section-label">Who are you, in here?</div>
       <div class="actions">
@@ -870,7 +1029,7 @@ function render(){
 
   app.innerHTML = `
     <div class="masthead">
-      <div><h1>Two Ways Out</h1><div class="case">CASE NO. 4471 &middot; ${S.profile.name.toUpperCase()}</div><button class="restart-link" onclick="confirmRestart()">Abandon case &amp; restart</button><button class="restart-link" onclick="confirmChangeProfile()">Change character</button></div>
+      <div><h1>Two Ways Out</h1><div class="case">CASE NO. 4471 &middot; ${S.scenario.tier.toUpperCase()} &middot; ${S.profile.name.toUpperCase()}</div><button class="restart-link" onclick="confirmRestart()">Abandon case &amp; restart</button><button class="restart-link" onclick="confirmChangeProfile()">Change character</button><button class="restart-link" onclick="confirmChangeScenario()">Change difficulty</button></div>
       <div class="day-badge">${S.day}<span>DAY</span></div>
     </div>
 
@@ -878,9 +1037,11 @@ function render(){
     <div class="confirm-banner">
       <div class="msg">${S.pendingConfirm === 'restart'
         ? 'Abandon this case and start over with the same character? Your current progress will be lost.'
-        : 'Abandon this case and pick a different character? Your current progress will be lost.'}</div>
+        : S.pendingConfirm === 'changeProfile'
+        ? 'Abandon this case and pick a different character? Your current progress will be lost.'
+        : 'Abandon this case and choose a different difficulty? Your current progress AND character will be lost.'}</div>
       <div class="btns">
-        <button class="confirm-yes" onclick="executePendingConfirm()">Yes, ${S.pendingConfirm === 'restart' ? 'restart' : 'change character'}</button>
+        <button class="confirm-yes" onclick="executePendingConfirm()">Yes, ${S.pendingConfirm === 'restart' ? 'restart' : S.pendingConfirm === 'changeProfile' ? 'change character' : 'change difficulty'}</button>
         <button onclick="cancelPendingConfirm()">Cancel</button>
       </div>
     </div>` : ''}
