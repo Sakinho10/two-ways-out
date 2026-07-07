@@ -79,7 +79,7 @@
   .gauge-mid{ position:absolute; left:50%; top:-4px; bottom:-4px; width:1px; background:var(--line); }
 
   /* stat row */
-  .stats{ display:grid; grid-template-columns:repeat(3,1fr); gap:8px; margin-bottom:18px; }
+  .stats{ display:grid; grid-template-columns:repeat(2,1fr); gap:8px; margin-bottom:18px; }
   .stat{
     background:var(--concrete-panel); border:1px solid var(--line); padding:8px 10px;
   }
@@ -196,7 +196,11 @@
 <script>
 const S = {
   day: 1,
-  trust: 15,
+  family: 15,
+  lawyer: 0,
+  media: 0,
+  pipelineMilestones: {},
+  pipelineBonus: 0,
   connections: 15,
   evidence: 5,
   escapePlan: 5,
@@ -215,7 +219,7 @@ const S = {
   pendingConfirm: null
 };
 
-const SAVE_KEY = 'twoWaysOutSave-v1';
+const SAVE_KEY = 'twoWaysOutSave-v2';
 
 function saveState(){
   try{ localStorage.setItem(SAVE_KEY, JSON.stringify(S)); }catch(e){ /* storage unavailable, ignore */ }
@@ -236,7 +240,8 @@ function clearSave(){
 }
 
 // track previous stat values to animate the ones that changed on next render
-let prevStats = { trust:S.trust, connections:S.connections, evidence:S.evidence, escapePlan:S.escapePlan, suspicion:S.suspicion };
+// (Family/Lawyer/Media are hidden — no tile to pulse — so they're not tracked here)
+let prevStats = { connections:S.connections, evidence:S.evidence, escapePlan:S.escapePlan, suspicion:S.suspicion };
 
 function clamp(v){ return Math.max(0, Math.min(100, v)); }
 
@@ -246,6 +251,48 @@ function statFactor(v){ return 0.6 + (v/100)*0.8; }
 // composure -> suspicion-gain multiplier: HIGH composure means LESS suspicion picked up.
 // 1.4x at composure 0 (rattles easily), 1.0x at 50, 0.6x at 100 (ice cold).
 function composureFactor(v){ return 1.4 - (v/100)*0.8; }
+
+// Soft-gates one Credibility stage's payoff behind the stage that feeds it:
+// a floor efficiency even at source=0, ramping to 100% once source hits threshold.
+function rampEfficiency(source, threshold, floor){
+  return floor + (1 - floor) * Math.min(1, source / threshold);
+}
+const FAMILY_THRESHOLD = 30, LAWYER_FLOOR = 0.2;   // gates Lawyer efficiency
+const LAWYER_THRESHOLD = 40, MEDIA_FLOOR = 0.15;   // gates Media efficiency
+
+// Credibility pipeline milestones — one-time narrative beats with no visible
+// gauge. Each fires once, permanently, and folds into computeJusticeChance
+// via S.pipelineBonus. See README for the design rationale.
+const MILESTONES = [
+  { stage:'family', at:25, bonus:0.5,  text:"Your sister starts visiting every week, notebook in hand, asking sharper questions than she used to." },
+  { stage:'family', at:60, bonus:1,    text:"Your parents scrape together enough for a real paralegal — not just whatever the public defender's office can spare." },
+  { stage:'family', at:90, bonus:1.5,  text:"Your family remortgages what's left of the house. There's no version of this where they walk away clean either." },
+  { stage:'lawyer',  at:25, bonus:0.75, text:"A public defender finally reads your file past the intake summary." },
+  { stage:'lawyer',  at:60, bonus:1.5,  text:"Your lawyer files a formal motion for review — the first paperwork that isn't just a form letter." },
+  { stage:'lawyer',  at:90, bonus:2.25, text:"Your lawyer brings in an outside expert witness willing to testify." },
+  { stage:'media',   at:25, bonus:0.5,  text:"A local court-watch blog lists your case among others worth a second look." },
+  { stage:'media',   at:60, bonus:1,    text:"A reporter calls your lawyer's office asking for an interview." },
+  { stage:'media',   at:90, bonus:1.5,  text:"Your case leads the six o'clock news. The DA's office does not enjoy this kind of attention." }
+];
+
+// Milestones can cross mid-action (e.g. inside an action's own applyDelta
+// call, before that action has even returned its own narrative text), so
+// their text can't safely go straight onto S.log there — that's before the
+// current day's own text exists yet, and gets overwritten once it's built.
+// They accumulate here instead; chooseAction appends this once, last, after
+// every other piece of the day's log is assembled.
+let pendingMilestoneText = '';
+
+function checkMilestones(){
+  for(const m of MILESTONES){
+    const key = m.stage + m.at;
+    if(!S.pipelineMilestones[key] && S[m.stage] >= m.at){
+      S.pipelineMilestones[key] = true;
+      S.pipelineBonus += m.bonus;
+      pendingMilestoneText += `\n\n${m.text}`;
+    }
+  }
+}
 
 const PROFILES = [
   {
@@ -257,7 +304,7 @@ const PROFILES = [
   {
     id:'giant', name:'The Gentle Giant',
     tagline:'Everyone likes him. Paperwork is not his thing.',
-    desc:"People trust you on sight, guards included. Reading a legal brief gives you a headache.",
+    desc:"People warm to you on sight, guards included. Reading a legal brief gives you a headache.",
     stats:{ intellect:30, physique:90, charisma:70, composure:65 }
   },
   {
@@ -275,7 +322,9 @@ const PROFILES = [
 ];
 
 function applyDelta(d){
-  if(d.trust) S.trust = clamp(S.trust + d.trust);
+  if(d.family) S.family = clamp(S.family + d.family);
+  if(d.lawyer) S.lawyer = clamp(S.lawyer + d.lawyer);
+  if(d.media) S.media = clamp(S.media + d.media);
   if(d.connections) S.connections = clamp(S.connections + d.connections);
   if(d.evidence) S.evidence = clamp(S.evidence + d.evidence);
   if(d.escapePlan) S.escapePlan = clamp(S.escapePlan + d.escapePlan);
@@ -285,6 +334,7 @@ function applyDelta(d){
     if(s > 0 && S.profile){ s = Math.round(s * composureFactor(S.profile.stats.composure)); }
     S.suspicion = clamp(S.suspicion + s);
   }
+  checkMilestones();
 }
 
 function rand(a,b){ return Math.floor(Math.random()*(b-a+1))+a; }
@@ -296,12 +346,15 @@ const GUARD_CONNECTIONS_THRESHOLD = 5; // uses after which the yard starts calli
 const ACTIONS = [
   {
     id:'library', label:'Volunteer in the law library', side:'just',
-    desc:'+Evidence, +Trust · weaker if repeated, and too much time in here draws attention',
+    desc:'+Evidence, builds Family · weaker if repeated, and too much time in here draws attention',
     run(mult=1){
       const intFactor = statFactor(S.profile.stats.intellect);
-      const e = Math.round(rand(4,8)*mult*intFactor), t = Math.round(rand(2,5)*mult*intFactor);
-      applyDelta({evidence:e, trust:t});
-      let text = `You spend the day buried in case law, cross-referencing your file against precedent. The clerk, Mrs. Okafor, notices you actually read the books instead of hiding contraband in them. "Keep this up," she says, "and someone upstairs might finally read your appeal." (+${e} Evidence, +${t} Trust)`;
+      const e = Math.round(rand(4,8)*mult*intFactor);
+      const fam = Math.round(rand(2,5)*mult*intFactor);
+      const lawyerEff = rampEfficiency(S.family, FAMILY_THRESHOLD, LAWYER_FLOOR);
+      const law = Math.round(rand(1,3)*mult*intFactor*lawyerEff);
+      applyDelta({evidence:e, family:fam, lawyer:law});
+      let text = `You spend the day buried in case law, cross-referencing your file against precedent. The clerk, Mrs. Okafor, notices you actually read the books instead of hiding contraband in them. "Keep this up," she says, "and someone upstairs might finally read your appeal." (+${e} Evidence, +${fam} Family, +${law} Lawyer)`;
       const overuse = S.actionCounts.library - LIBRARY_SUSPICION_THRESHOLD;
       if(overuse > 0){
         const extraSuspicion = overuse * 3;
@@ -313,18 +366,24 @@ const ACTIONS = [
   },
   {
     id:'guard', label:'Do a guard a quiet favor', side:'just',
-    desc:'+Trust, small +Evidence chance · weaker if repeated, and too many favors makes you look like a sucker',
+    desc:'Builds Family, small +Evidence chance · weaker if repeated, and too many favors makes you look like a sucker',
     run(mult=1){
       const chaFactor = statFactor(S.profile.stats.charisma);
-      const t = Math.round(rand(5,9)*mult*chaFactor);
-      applyDelta({trust:t});
+      const fam = Math.round(rand(5,9)*mult*chaFactor);
+      applyDelta({family:fam});
       let text;
       if(Math.random()<0.4){
         const e = Math.round(rand(3,7)*mult*chaFactor);
         applyDelta({evidence:e});
-        text = `You cover for a rookie guard who forgot to log a headcount, no questions asked. Grateful, he lets slip that the arresting officer on your case has a disciplinary file of his own. (+${t} Trust, +${e} Evidence)`;
+        text = `You cover for a rookie guard who forgot to log a headcount, no questions asked. Grateful, he lets slip that the arresting officer on your case has a disciplinary file of his own. (+${fam} Family, +${e} Evidence)`;
       } else {
-        text = `You keep an eye out for a guard who's been decent to you, warning him before a surprise walkthrough. He owes you now, even if he'd never say it out loud. (+${t} Trust)`;
+        text = `You keep an eye out for a guard who's been decent to you, warning him before a surprise walkthrough. He owes you now, even if he'd never say it out loud. (+${fam} Family)`;
+      }
+      if(Math.random()<0.15){
+        const mediaEff = rampEfficiency(S.lawyer, LAWYER_THRESHOLD, MEDIA_FLOOR);
+        const med = Math.round(rand(1,3)*mult*chaFactor*mediaEff);
+        applyDelta({media:med});
+        text += `\n\nThe guard mentions, almost in passing, that a reporter's been asking around the booking desk about cases like yours. Not about you specifically. Not yet. (+${med} Media)`;
       }
       const overuse = S.actionCounts.guard - GUARD_CONNECTIONS_THRESHOLD;
       if(overuse > 0){
@@ -337,20 +396,21 @@ const ACTIONS = [
   },
   {
     id:'letters', label:'Write to your lawyer & family', side:'just',
-    desc:'+Evidence · costs Trust, very slow, and doesn\'t always land',
+    desc:'+Evidence, builds Family & Lawyer · slow, and doesn\'t always land',
     run(mult=1){
-      if(S.trust < 8){
-        return `You write the letters anyway, but with no one on the outside believing you yet, they land in a drawer. Nothing changes.`;
-      }
       const intFactor = statFactor(S.profile.stats.intellect);
       const failChance = 0.35 - (S.profile.stats.intellect/100)*0.15; // sharper writing is more likely to land
+      const famBase = Math.round(rand(3,6)*mult*intFactor);
       if(Math.random() < failChance){
-        applyDelta({trust:-4});
-        return `Your sister visits the original witness, but he won't sign anything — spooked, or paid off, hard to say. Your lawyer's motion goes nowhere this round. It cost you nothing but time, and the little Trust it takes to keep asking. (-4 Trust, no Evidence gained)`;
+        const fam = Math.max(1, Math.round(famBase * 0.4));
+        applyDelta({family:fam});
+        return `Your sister visits the original witness, but he won't sign anything — spooked, or paid off, hard to say. Your lawyer's motion goes nowhere this round. It cost you nothing but time and effort that doesn't quite land. (+${fam} Family, no Evidence gained)`;
       }
       const e = Math.round(rand(6,11)*mult*intFactor);
-      applyDelta({evidence:e, trust:-4});
-      return `Your sister finds the courage to visit the original witness. Your lawyer, paid in installments your family can barely afford, files a motion for review. It's slow, expensive, exhausting — but it's real. (+${e} Evidence, -4 Trust, spent on the lawyer)`;
+      const lawyerEff = rampEfficiency(S.family, FAMILY_THRESHOLD, LAWYER_FLOOR);
+      const law = Math.round(rand(1,3)*mult*intFactor*lawyerEff);
+      applyDelta({evidence:e, family:famBase, lawyer:law});
+      return `Your sister finds the courage to visit the original witness. Your lawyer, paid in installments your family can barely afford, files a motion for review. It's slow, expensive, exhausting — but it's real. (+${e} Evidence, +${famBase} Family, +${law} Lawyer)`;
     }
   },
   {
@@ -445,7 +505,7 @@ const ESCAPE_ESCALATION_PENALTY = 8; // odds points lost per prior failed attemp
 
 function computeJusticeChance(){
   const intFactor = (S.profile.stats.intellect - 50) * 0.006;
-  const raw = 3 + S.evidence * (0.85 + intFactor) + S.trust * 0.12 - S.suspicion * 0.3;
+  const raw = 3 + S.evidence * (0.85 + intFactor) + S.pipelineBonus - S.suspicion * 0.3;
   return Math.max(1, Math.min(95, raw));
 }
 
@@ -484,8 +544,8 @@ function maybeEvent(){
         return `\n\nLIGHTS FLARE AT 3 A.M. — Cell search. They tear your mattress apart and find nothing, but the write-up goes in your file regardless. Both plans lose ground. (-3 Evidence, -3 Escape Plan, +10 Suspicion)`;
       },
       ()=>{
-        applyDelta({suspicion:8, trust:-4});
-        return `\n\nAn informant sells a rumor about you to the wrong guard. People start watching you differently. (-4 Trust, +8 Suspicion)`;
+        applyDelta({suspicion:8, lawyer:-4});
+        return `\n\nAn informant sells a rumor about you to the wrong guard. Your lawyer hears the rumor too, and wants a retainer up front before touching your file again. (-4 Lawyer, +8 Suspicion)`;
       },
       ()=>{
         S.day += rand(3,7);
@@ -497,7 +557,7 @@ function maybeEvent(){
   }
   if(roll >= 96){
     const good = [
-      ()=>{ applyDelta({trust:6}); return `\n\nA guard you helped months ago quietly vouches for you at shift briefing. (+6 Trust)`; },
+      ()=>{ applyDelta({lawyer:6}); return `\n\nA guard you helped months ago quietly vouches for you at shift briefing — word reaches the parole board's liaison, not just the guard's shift log. (+6 Lawyer)`; },
       ()=>{ applyDelta({escapePlan:6}); return `\n\nSomeone in the crew owes you and pays it forward with a tip on a blind spot. (+6 Escape Plan)`; },
     ];
     return pick(good)();
@@ -586,6 +646,8 @@ function chooseAction(a){
   S.day += 1;
   maybeRegenJusticeAttempt();
 
+  pendingMilestoneText = '';
+
   // ambient suspicion drift — time and routine scrutiny work against you regardless of choice
   applyDelta({suspicion:2});
 
@@ -604,6 +666,7 @@ function chooseAction(a){
   msg += maybeGrapevineTip();
   msg += maybeEvidenceChallenge();
   msg += maybeEvent();
+  msg += pendingMilestoneText;
   S.log = msg;
   S.expandedCategory = null;
   render();
@@ -635,7 +698,6 @@ function pulseClass(key, current){
 function statBlock(){
   const html = `
   <div class="stats">
-    <div class="stat"><div class="k">Trust</div><div class="v ${pulseClass('trust',S.trust)}">${S.trust}</div></div>
     <div class="stat"><div class="k">Connections</div><div class="v ${pulseClass('connections',S.connections)}">${S.connections}</div></div>
     <div class="stat ${S.suspicion>=60?'warn':''}"><div class="k">Suspicion</div><div class="v ${pulseClass('suspicion',S.suspicion)}">${S.suspicion}</div></div>
   </div>`;
@@ -679,7 +741,8 @@ function endingScreen(){
 }
 
 function resetGameState(){
-  S.day=1; S.trust=15; S.connections=15; S.evidence=5; S.escapePlan=5; S.suspicion=10;
+  S.day=1; S.family=15; S.lawyer=0; S.media=0; S.pipelineMilestones={}; S.pipelineBonus=0;
+  S.connections=15; S.evidence=5; S.escapePlan=5; S.suspicion=10;
   S.over=false; S.ending=null; S.expandedCategory=null;
   S.lastActionId=null; S.actionStreak=0;
   S.actionCounts = { library:0, guard:0, letters:0, crew:0, scout:0, bribe:0, rest:0 };
@@ -688,7 +751,7 @@ function resetGameState(){
   S.escapeAttemptsUsed = 0;
   S.pendingConfirm = null;
   S.log = "New cell, same choice. You wake up on the concrete shelf they call a bunk. Nobody's listening yet. Today, you decide what kind of man gets you out.";
-  prevStats = { trust:S.trust, connections:S.connections, evidence:S.evidence, escapePlan:S.escapePlan, suspicion:S.suspicion };
+  prevStats = { connections:S.connections, evidence:S.evidence, escapePlan:S.escapePlan, suspicion:S.suspicion };
 }
 
 function restart(){
@@ -846,7 +909,7 @@ function render(){
     </div>`}
   `;
 
-  prevStats = { trust:S.trust, connections:S.connections, evidence:S.evidence, escapePlan:S.escapePlan, suspicion:S.suspicion };
+  prevStats = { connections:S.connections, evidence:S.evidence, escapePlan:S.escapePlan, suspicion:S.suspicion };
   saveState();
 }
 
