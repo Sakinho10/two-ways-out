@@ -305,7 +305,8 @@ const S = {
   log: "You wake up on the concrete shelf they call a bunk. Four hundred and some days since they brought you in for a robbery you didn't commit. Nobody's listening yet. Today, you decide what kind of man gets you out.",
   over: false,
   ending: null,
-  expandedCategory: null,
+  todayMoves: [],
+  unlockedMoveIds: [],
   lastActionId: null,
   actionStreak: 0,
   scenario: null,
@@ -505,6 +506,7 @@ function applyDelta(d){
     S.suspicion = clamp(S.suspicion + s);
   }
   checkMilestones();
+  checkMoveUnlocks();
 }
 
 function rand(a,b){ return Math.floor(Math.random()*(b-a+1))+a; }
@@ -637,14 +639,229 @@ const ACTIONS = [
       applyDelta({suspicion:-s});
       return `You do nothing worth noticing. Some days that's the smartest move in the building. (-${s} Suspicion)`;
     }
+  },
+
+  // ------------------------------------------------------------------
+  // Milestone-unlocked moves: join the pool permanently once their
+  // threshold is crossed (see checkMoveUnlocks() below), never re-lock.
+  // ------------------------------------------------------------------
+  {
+    id:'reviewTestimony', label:'Review testimony line by line with your lawyer', side:'just',
+    desc:'+Evidence, +Lawyer · unlocked once your lawyer is invested in the case',
+    run(mult=1){
+      const intFactor = statFactor(S.profile.stats.intellect);
+      const e = Math.round(rand(7,12)*mult*intFactor);
+      const law = Math.round(rand(2,4)*mult*intFactor);
+      applyDelta({evidence:e, lawyer:law});
+      return `Your lawyer finally has time to go through the transcript with you, page by page, flagging every place the witness contradicts herself. It's tedious, unglamorous work — and the first time anyone with a law degree has taken your file this seriously. (+${e} Evidence, +${law} Lawyer)`;
+    }
+  },
+  {
+    id:'pressStatement', label:'Give a statement to the press', side:'just',
+    desc:'+Evidence, +Media · big +Suspicion, going public draws real heat',
+    run(mult=1){
+      const chaFactor = statFactor(S.profile.stats.charisma);
+      const e = Math.round(rand(9,15)*mult*chaFactor);
+      const med = Math.round(rand(3,5)*mult*chaFactor);
+      const s = rand(6,10);
+      applyDelta({evidence:e, media:med, suspicion:s});
+      return `You agree to go on the record — your name, your face, your version of events, printed where the DA's office can't pretend not to see it. The story runs. So does the attention it buys you inside. (+${e} Evidence, +${med} Media, +${s} Suspicion)`;
+    }
+  },
+  {
+    id:'testBlindSpot', label:'Test the blind spot you found', side:'esc',
+    desc:'Big +Escape Plan on a good night · backfires into +Suspicion on a bad one',
+    run(mult=1){
+      const phyFactor = statFactor(S.profile.stats.physique);
+      if(Math.random() < 0.7){
+        const p = Math.round(rand(10,16)*mult*phyFactor);
+        applyDelta({escapePlan:p});
+        return `You slip into the gap in the rotation you've been watching for weeks and time it for real, start to finish, no interruptions. It holds up exactly the way you mapped it. (+${p} Escape Plan)`;
+      }
+      const s = rand(10,16);
+      applyDelta({suspicion:s});
+      return `You slip into the gap — and a shift change runs early tonight, nobody told you. You're back in your bunk before anyone clocks you missing, but a guard notices you somewhere you shouldn't be and starts asking why. (+${s} Suspicion, nothing gained)`;
+    }
+  },
+
+  // ------------------------------------------------------------------
+  // Profile-signature moves: always in the pool from game start, one per
+  // profile, matching whichever profile is currently selected.
+  // ------------------------------------------------------------------
+  {
+    id:'crossReferenceFiles', label:'Cross-reference every file against precedent', side:'just',
+    desc:'+Evidence, chance of +Lawyer · your sharpest move, and it shows',
+    run(mult=1){
+      const intFactor = statFactor(S.profile.stats.intellect);
+      const e = Math.round(rand(6,10)*mult*intFactor);
+      const law = Math.round(rand(1,2)*mult*intFactor);
+      applyDelta({evidence:e, lawyer:law});
+      return `You build a spreadsheet no one asked for, cross-referencing your file against a dozen similar cases and the precedent that overturned them. It's the kind of methodical work most men in here don't have the patience for. (+${e} Evidence, +${law} Lawyer)`;
+    }
+  },
+  {
+    id:'leanOnInmate', label:'Lean on the right inmate', side:'esc',
+    desc:'+Connections, chance of bonus +Escape Plan · size opens doors quietly',
+    run(mult=1){
+      const phyFactor = statFactor(S.profile.stats.physique);
+      const c = Math.round(rand(6,10)*mult*phyFactor);
+      applyDelta({connections:c});
+      let text = `You don't say much. You don't have to — a hand on a shoulder and a look that means it does more work than a threat would. Word gets around that you're not someone to cross, and doors that used to stay shut start opening. (+${c} Connections)`;
+      if(Math.random() < 0.3){
+        const p = Math.round(rand(3,6)*mult*phyFactor);
+        applyDelta({escapePlan:p});
+        text += `\n\nSomeone grateful — or just careful — mentions a loose grate nobody's bothered to fix. (+${p} Escape Plan)`;
+      }
+      return text;
+    }
+  },
+  {
+    id:'playGuardsAgainstEachOther', label:'Play the guards against each other', side:'just',
+    desc:'Boosts whichever of Family, Lawyer, or Media needs it most · +Suspicion',
+    run(mult=1){
+      const chaFactor = statFactor(S.profile.stats.charisma);
+      const stages = ['family','lawyer','media'];
+      const nextThreshold = v => { for(const t of [25,60,90]){ if(v<t) return t; } return 100; };
+      let target = stages[0], bestProp = -Infinity;
+      for(const st of stages){
+        const v = S[st];
+        const t = nextThreshold(v);
+        const prop = (t - v) / t;
+        if(prop > bestProp){ bestProp = prop; target = st; }
+      }
+      const amt = Math.round(rand(4,8)*mult*chaFactor);
+      const s = rand(3,6);
+      applyDelta({ [target]: amt, suspicion: s });
+      const labelMap = { family:'Family', lawyer:'Lawyer', media:'Media' };
+      const flavorMap = {
+        family: `You feed a guard a story that gets back to your sister exactly the way you wanted it to — a little hope, a little urgency.`,
+        lawyer: `You let it slip to a guard who talks too much that your case is "about to get interesting." By the end of the week your lawyer's heard a version of it that makes him move faster.`,
+        media: `You get a guard complaining about "the reporters calling again" — and make sure he keeps complaining somewhere a few more people can hear.`
+      };
+      return `${flavorMap[target]} It's not a clean move, and it wouldn't survive scrutiny, but it works. (+${amt} ${labelMap[target]}, +${s} Suspicion)`;
+    }
+  },
+  {
+    id:'keepEveryoneTalking', label:'Keep everyone talking', side:'neutral',
+    desc:'Small +Evidence and +Escape Plan at once · -Suspicion, steady and unremarkable',
+    run(mult=1){
+      const e = Math.round(rand(3,5)*mult);
+      const p = Math.round(rand(3,5)*mult);
+      const s = -rand(1,2);
+      applyDelta({evidence:e, escapePlan:p, suspicion:s});
+      return `You don't commit to one plan over the other — you just keep talking to everybody, a little at a time. Nothing dramatic happens today. Nothing dramatic ever does, with you. (+${e} Evidence, +${p} Escape Plan, ${s} Suspicion)`;
+    }
+  },
+
+  // ------------------------------------------------------------------
+  // Scenario-flavored moves: always in the pool from game start, one per
+  // scenario, matching whichever scenario is currently selected.
+  // ------------------------------------------------------------------
+  {
+    id:'workTheThinFile', label:'Pull the thread on the thin file', side:'just',
+    desc:"Big +Evidence · costs little to nothing, nobody's watching this case closely",
+    run(mult=1){
+      const intFactor = statFactor(S.profile.stats.intellect);
+      const e = Math.round(rand(10,16)*mult*intFactor);
+      applyDelta({evidence:e});
+      return `You start pulling on the loose ends nobody bothered to tie off — a register receipt with the wrong timestamp, a "witness" who never actually got interviewed. Nobody's watching this case closely enough to notice you working it. (+${e} Evidence)`;
+    }
+  },
+  {
+    id:'revisitTheTimeline', label:'Walk the timeline again with your family', side:'just',
+    desc:'+Evidence, +Family · the people who actually know you can still move this case',
+    run(mult=1){
+      const intFactor = statFactor(S.profile.stats.intellect);
+      const e = Math.round(rand(6,10)*mult*intFactor);
+      const fam = Math.round(rand(3,6)*mult*intFactor);
+      applyDelta({evidence:e, family:fam});
+      return `You go through that night again with your sister, minute by minute, the way you have a dozen times before. This time she remembers something small she never mentioned to the detectives — where you actually were, and who could vouch for it. (+${e} Evidence, +${fam} Family)`;
+    }
+  },
+  {
+    id:'pushBackOnTheNarrative', label:"Push back on the department's story", side:'just',
+    desc:"+Evidence · meaningful +Suspicion, the union doesn't like being contradicted",
+    run(mult=1){
+      const intFactor = statFactor(S.profile.stats.intellect);
+      const e = Math.round(rand(7,11)*mult*intFactor);
+      const s = rand(5,9);
+      applyDelta({evidence:e, suspicion:s});
+      return `You put together a timeline that doesn't match the official one — down to the minute — and get it in front of someone who has to acknowledge it exists. The department doesn't like being contradicted, and now everyone on this block knows you tried. (+${e} Evidence, +${s} Suspicion)`;
+    }
+  },
+  {
+    id:'controlTheStory', label:'Get out ahead of the story yourself', side:'just',
+    desc:'Big +Evidence, +Media · very high +Suspicion, the whole country is already watching',
+    run(mult=1){
+      const chaFactor = statFactor(S.profile.stats.charisma);
+      const e = Math.round(rand(10,15)*mult*chaFactor);
+      const med = Math.round(rand(4,6)*mult*chaFactor);
+      const s = rand(7,11);
+      applyDelta({evidence:e, media:med, suspicion:s});
+      return `You get a detail to a sympathetic reporter before the DA's office can spin it first — something specific enough to be credible, small enough not to blow back on your lawyer. It works. It also means the whole country's coverage of you shifts, if only for a day, and every guard on this block clocks it. (+${e} Evidence, +${med} Media, +${s} Suspicion)`;
+    }
   }
 ];
 
-const CATEGORIES = [
-  { id:'justice', label:'Play it straight', side:'just', desc:'Build your case, the slow way — repeating a move loses steam', actionIds:['library','guard','letters'] },
-  { id:'escape', label:'Play the angles', side:'esc', desc:'Build your way out, the risky way — repeating a move loses steam', actionIds:['crew','scout','bribe'] },
-  { id:'laylow', label:'Keep your head down', side:'neutral', desc:'Cool off, no progress', actionIds:['rest'] }
-];
+// ------------------------------------------------------------------
+// Daily move pool: base 6 (library/guard/letters/crew/scout/bribe) are
+// always available. Milestone moves join permanently once unlocked and
+// never re-lock. Exactly one profile-signature and one scenario-flavored
+// move is available at a time, matching whatever's currently selected.
+// Rest is always offered separately — it's never part of the draw.
+// ------------------------------------------------------------------
+const BASE_MOVE_IDS = ['library','guard','letters','crew','scout','bribe'];
+const MILESTONE_MOVE_IDS = ['reviewTestimony','pressStatement','testBlindSpot'];
+const MOVE_UNLOCK_CONDITIONS = {
+  reviewTestimony: () => S.lawyer >= 25,
+  pressStatement: () => S.media >= 25,
+  testBlindSpot: () => S.escapePlan >= 40
+};
+const PROFILE_SIGNATURE_MOVE = {
+  strategist:'crossReferenceFiles', giant:'leanOnInmate',
+  manipulator:'playGuardsAgainstEachOther', everyman:'keepEveryoneTalking'
+};
+const SCENARIO_SIGNATURE_MOVE = {
+  easy:'workTheThinFile', normal:'revisitTheTimeline',
+  hard:'pushBackOnTheNarrative', veryhard:'controlTheStory'
+};
+
+function actionById(id){ return ACTIONS.find(a=>a.id===id); }
+
+function checkMoveUnlocks(){
+  for(const id of MILESTONE_MOVE_IDS){
+    if(!S.unlockedMoveIds.includes(id) && MOVE_UNLOCK_CONDITIONS[id]()){
+      S.unlockedMoveIds.push(id);
+    }
+  }
+}
+
+function getAvailableMovePool(){
+  const ids = [...BASE_MOVE_IDS];
+  for(const id of MILESTONE_MOVE_IDS){
+    if(S.unlockedMoveIds.includes(id)) ids.push(id);
+  }
+  if(S.profile && PROFILE_SIGNATURE_MOVE[S.profile.id]) ids.push(PROFILE_SIGNATURE_MOVE[S.profile.id]);
+  if(S.scenario && SCENARIO_SIGNATURE_MOVE[S.scenario.id]) ids.push(SCENARIO_SIGNATURE_MOVE[S.scenario.id]);
+  return ids.map(actionById).filter(Boolean);
+}
+
+// Draws the 3 non-Rest moves for the day: one guaranteed Justice-side,
+// one guaranteed Escape-side, and one wildcard from whatever's left —
+// only called when a new day actually starts (see chooseAction/
+// tryPresentCase/tryAttemptEscape/resetGameState/selectProfile below),
+// never on page reload or reference-overlay open/close.
+function drawTodayMoves(){
+  const pool = getAvailableMovePool();
+  const justicePool = pool.filter(a=>a.side==='just');
+  const escapePool = pool.filter(a=>a.side==='esc');
+  const slot1 = pick(justicePool);
+  const slot2 = pick(escapePool);
+  const used = new Set([slot1.id, slot2.id]);
+  const remainingPool = pool.filter(a=>!used.has(a.id));
+  const slot3 = pick(remainingPool);
+  S.todayMoves = [slot1.id, slot2.id, slot3.id];
+}
 
 // The hard day-floor that used to gate Justice attempts (MIN_JUSTICE_DAY)
 // has been removed entirely — Justice is attemptable from day 1, gated
@@ -844,6 +1061,7 @@ function tryAttemptEscape(){
     applyDelta({suspicion:Math.round(100*mult), escapePlan:-Math.round(40*mult), connections:-Math.round(20*mult)});
     S.log = `The tunnel map was three years out of date — they rerouted the pipe last winter. Caught at the fence line. It costs you dearly: ${totalDays} days in solitary, your network gutted, every guard now watching your hands instead of your face. Worse — they've seen this move now. Next time will be harder.\n\nYou start rebuilding, if you choose to keep going.`;
     checkTrialDeadline();
+    if(!S.over) drawTodayMoves(); // a new day started — redraw the 3 offered moves
     renderAfterFail();
     return;
   }
@@ -875,6 +1093,7 @@ function tryPresentCase(){
       : `That was your last scheduled hearing for now — the board won't see you again for a while.`;
     S.log = `The parole board reads your file, glances at the disciplinary notes sitting beside your appeal, and denies it in four minutes flat. "Insufficient corroboration," the letter says. It costs you ${extraDays} day${extraDays===1?'':'s'} of stalled paperwork on top of today. ${remainingNote}`;
     checkTrialDeadline();
+    if(!S.over) drawTodayMoves(); // a new day started — redraw the 3 offered moves
     render();
     return;
   }
@@ -915,23 +1134,7 @@ function chooseAction(a){
   msg += maybeEvent();
   S.log = msg + S.log; // main narrative first, then any milestone beats that fired today
   checkTrialDeadline();
-  S.expandedCategory = null;
-  render();
-}
-
-function chooseCategory(catId){
-  const cat = CATEGORIES.find(c=>c.id===catId);
-  if(cat.actionIds.length === 1){
-    // single-action category: just run it directly, no need to expand
-    chooseAction(ACTIONS.find(x=>x.id===cat.actionIds[0]));
-    return;
-  }
-  S.expandedCategory = catId;
-  render();
-}
-
-function backToCategories(){
-  S.expandedCategory = null;
+  if(!S.over) drawTodayMoves(); // a new day started — redraw the 3 offered moves
   render();
 }
 
@@ -1167,7 +1370,7 @@ function resetGameState(){
   const famStart = S.scenario ? S.scenario.family.start : 15;
   S.day=1; S.family=famStart; S.lawyer=0; S.media=0; S.pipelineMilestones={}; S.pipelineBonus=0;
   S.connections=15; S.evidence=5; S.escapePlan=5; S.suspicion=10;
-  S.over=false; S.ending=null; S.expandedCategory=null;
+  S.over=false; S.ending=null;
   S.lastActionId=null; S.actionStreak=0;
   S.actionCounts = { library:0, guard:0, letters:0, crew:0, scout:0, bribe:0, rest:0 };
   S.justiceAttemptsLeft = JUSTICE_MAX_ATTEMPTS;
@@ -1177,8 +1380,16 @@ function resetGameState(){
   S.appealsUsed = 0;
   S.trialDeadline = S.scenario ? CYCLE_DAYS[S.scenario.id] : null;
   S.pendingConfirm = null;
+  S.unlockedMoveIds = [];
+  S.todayMoves = [];
   S.log = "New cell, same choice. You wake up on the concrete shelf they call a bunk. Nobody's listening yet. Today, you decide what kind of man gets you out.";
   prevStats = { connections:S.connections, evidence:S.evidence, escapePlan:S.escapePlan, suspicion:S.suspicion };
+  // profile & scenario are both already set for a same-character/same-case
+  // restart (see restart() below) — draw day 1's moves immediately so the
+  // game view never renders with an empty move list. When either is still
+  // null (changeProfile/changeDifficulty, on their way back to selection
+  // screens), selectProfile() below draws once both are set again.
+  if(S.scenario && S.profile) drawTodayMoves();
 }
 
 function restart(){
@@ -1253,6 +1464,7 @@ function selectScenario(id){
 
 function selectProfile(id){
   S.profile = PROFILES.find(p=>p.id===id);
+  if(S.scenario) drawTodayMoves(); // day 1 — both profile and scenario are now set
   S.view = 'game';
   saveState();
   render();
@@ -1295,7 +1507,9 @@ Some days, the smartest move is nothing at all — keeping your head down costs 
 
 When you're ready to try an ending, that attempt IS your day — you're not building anything else on top of it. Walking in confident is safer than walking in desperate; a case or a plan that isn't ready yet costs you more if it falls apart than one that was genuinely close.
 
-The board will only hear you so many times before they stop listening for a while. The fence doesn't forget a failed run either — every attempt makes guards watch harder, and the next try costs you more than the last.`
+The board will only hear you so many times before they stop listening for a while. The fence doesn't forget a failed run either — every attempt makes guards watch harder, and the next try costs you more than the last.
+
+These aren't the only options you'll ever have. Pay attention — opportunities show up when you've earned them, not before.`
   },
   {
     title: 'Who You Are',
@@ -1501,31 +1715,21 @@ function renderGameView(){
   let justiceDisabledReason = '';
   if(S.justiceAttemptsLeft <= 0) justiceDisabledReason = `— next hearing available day ${S.justiceCooldownUntil}`;
 
-  let movesHtml;
-  if(S.expandedCategory){
-    const cat = CATEGORIES.find(c=>c.id===S.expandedCategory);
-    const subActions = ACTIONS.filter(a=>cat.actionIds.includes(a.id));
-    movesHtml = `
-      <button class="back-btn" onclick="backToCategories()">&larr; Back</button>
-      <div class="actions">
-        ${subActions.map(a=>`
-          <button class="action ${a.side==='esc'?'esc':''}" onclick="chooseAction(ACTIONS.find(x=>x.id==='${a.id}'))">
-            ${a.label}
-            <span class="desc">${a.desc}</span>
-          </button>
-        `).join('')}
-      </div>`;
-  } else {
-    movesHtml = `
-      <div class="actions">
-        ${CATEGORIES.map(c=>`
-          <button class="category ${c.side==='esc'?'esc':(c.side==='neutral'?'neutral':'')}" onclick="chooseCategory('${c.id}')">
-            ${c.label}
-            <span class="desc">${c.desc}</span>
-          </button>
-        `).join('')}
-      </div>`;
-  }
+  const restAction = actionById('rest');
+  const todayActions = S.todayMoves.map(actionById).filter(Boolean);
+  const movesHtml = `
+    <div class="actions">
+      <button class="action" onclick="chooseAction(ACTIONS.find(x=>x.id==='rest'))">
+        ${restAction.label}
+        <span class="desc">${restAction.desc}</span>
+      </button>
+      ${todayActions.map(a=>`
+        <button class="action ${a.side==='esc'?'esc':''}" onclick="chooseAction(ACTIONS.find(x=>x.id==='${a.id}'))">
+          ${a.label}
+          <span class="desc">${a.desc}</span>
+        </button>
+      `).join('')}
+    </div>`;
 
   const html = `
     <div class="masthead">
@@ -1559,10 +1763,9 @@ function renderGameView(){
 
     <div class="log"><span class="tag">LOG</span>${S.log}</div>
 
-    <div class="section-label">${S.expandedCategory ? 'Choose your move' : "Today's move"}</div>
+    <div class="section-label">Today's move</div>
     ${movesHtml}
 
-    ${S.expandedCategory ? '' : `
     <div class="section-label">When you're ready</div>
     <div class="actions">
       <button class="action attempt" ${canJustice?'':'disabled'} onclick="tryPresentCase()">
@@ -1573,7 +1776,7 @@ function renderGameView(){
         Attempt the escape tonight
         <span class="desc">Feels ${confidenceLabel(escapeChance)}${S.escapeAttemptsUsed>0 ? ` · they're onto your patterns after ${S.escapeAttemptsUsed} attempt${S.escapeAttemptsUsed===1?'':'s'}` : ''}</span>
       </button>
-    </div>`}
+    </div>
   `;
 
   prevStats = { connections:S.connections, evidence:S.evidence, escapePlan:S.escapePlan, suspicion:S.suspicion };
@@ -1606,6 +1809,16 @@ function render(){
 
 loadState();
 if(S.scenario && S.trialDeadline == null) S.trialDeadline = CYCLE_DAYS[S.scenario.id]; // guard against saves from before the trial deadline system existed
+// guard against saves from before the dynamic move pool existed, or a
+// corrupt/missing draw — reloading mid-decision must otherwise show the
+// exact same 3 moves already offered, never a fresh draw
+if(!Array.isArray(S.unlockedMoveIds)) S.unlockedMoveIds = [];
+if(S.scenario && S.profile){
+  checkMoveUnlocks(); // catches saves whose stats already crossed a threshold pre-feature
+  if(!Array.isArray(S.todayMoves) || S.todayMoves.length !== 3 || S.todayMoves.some(id=>!actionById(id))){
+    drawTodayMoves();
+  }
+}
 // Home is always the entry point on load — an in-progress game is offered
 // via Continue rather than auto-resumed into, and any overlay state from a
 // prior session shouldn't carry over onto a freshly loaded screen.
