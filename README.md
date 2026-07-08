@@ -123,8 +123,12 @@ Once a run ends, `computeGrade()` turns the final day count, winning path,
 and failed-attempt counts into a letter grade, shown on the ending screen
 alongside a short generated comment and the raw numeric score.
 
-- **Efficiency** compares `S.day` against a per-scenario par (20/25/28/32
-  for easy/normal/hard/veryhard), capped at 100.
+- **Efficiency** compares `S.day` against a per-scenario par (12/16/17/17
+  for easy/normal/hard/veryhard), capped at 100. Retuned down from the
+  original 20/25/28/32 once the dynamic move pool shipped — well-played
+  runs finish faster than the old fixed 6-move system assumed, so the old
+  par let most wins cap efficiency at 100 regardless of how well they were
+  actually played.
 - **Path fit** rewards winning via a profile's *weak* path (+15) over its
   *strong* one (-15) — Strategist and Manipulator lean Justice, Gentle
   Giant leans Escape, Everyman has no lean (always 0) and can't earn the

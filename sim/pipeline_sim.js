@@ -609,7 +609,7 @@ function runBatch(profileId, scenarioId, strategy, n){
 // letter-band boundaries and difficulty ceiling can be validated against
 // simulated playthroughs before shipping. See index.html for rationale.
 // ---------------------------------------------------------------------
-const PAR_DAYS = { easy:20, normal:25, hard:28, veryhard:32 };
+const PAR_DAYS = { easy:12, normal:16, hard:17, veryhard:17 };
 const DIFFICULTY_MULTIPLIER = { easy:0.85, normal:1.0, hard:1.15, veryhard:1.3 };
 const DIFFICULTY_CEILING = { easy:'B-', normal:'B+', hard:'A-', veryhard:null };
 const GRADE_ORDER = ['F','D','C-','C','C+','B-','B','B+','A-','A','A+'];
