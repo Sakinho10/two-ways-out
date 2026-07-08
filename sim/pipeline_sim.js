@@ -185,6 +185,23 @@ const JUSTICE_MAX_ATTEMPTS = 3;
 const JUSTICE_COOLDOWN_DAYS = 25;
 const ESCAPE_ESCALATION_PENALTY = 8;
 
+// Mirrors CYCLE_DAYS/APPEALS_ALLOWED/checkTrialDeadline() in index.html.
+const CYCLE_DAYS = { easy: 35, normal: 38, hard: 42, veryhard: 48 };
+const APPEALS_ALLOWED = { easy: 1, normal: 2, hard: 3, veryhard: 3 };
+
+function checkTrialDeadline(S){
+  if(S.over) return;
+  if(S.day < S.trialDeadline) return;
+  const scenarioId = S.scenario.id;
+  if(S.appealsUsed < APPEALS_ALLOWED[scenarioId]){
+    S.appealsUsed += 1;
+    S.trialDeadline += CYCLE_DAYS[scenarioId];
+  } else {
+    S.over = true;
+    S.ending = 'sentence-stands';
+  }
+}
+
 // Mirrors underpreparedMult() / JUSTICE_FAIL_EXTRA_DAYS_BASE in index.html —
 // see that file for the rationale.
 function underpreparedMult(chance){
@@ -271,7 +288,9 @@ function newState(profile, scenario){
     justiceAttemptsLeft: JUSTICE_MAX_ATTEMPTS,
     justiceCooldownUntil: 0,
     escapeAttemptsUsed: 0,
-    justiceAttemptsUsed: 0
+    justiceAttemptsUsed: 0,
+    appealsUsed: 0,
+    trialDeadline: CYCLE_DAYS[scenario.id]
   };
 }
 
@@ -287,6 +306,7 @@ function runAction(S, id){
   maybeGrapevineTip(S);
   maybeEvidenceChallenge(S);
   maybeEvent(S);
+  checkTrialDeadline(S);
 }
 
 function tryPresentCase(S){
@@ -307,6 +327,7 @@ function tryPresentCase(S){
     S.day += extraDays;
     applyDelta(S, {suspicion:Math.round(10*mult), evidence:-Math.round(10*mult)});
   }
+  checkTrialDeadline(S);
 }
 
 function tryAttemptEscape(S){
@@ -324,6 +345,7 @@ function tryAttemptEscape(S){
     S.day += totalDays;
     applyDelta(S, {suspicion:Math.round(100*mult), escapePlan:-Math.round(40*mult), connections:-Math.round(20*mult)});
   }
+  checkTrialDeadline(S);
 }
 
 // ---------- Bots ----------
@@ -400,7 +422,7 @@ function simulateOne(profileId, scenarioId, strategy){
 }
 
 function runBatch(profileId, scenarioId, strategy, n){
-  const wins = { 'justice-win':0, 'escape-win':0, 'timeout':0 };
+  const wins = { 'justice-win':0, 'escape-win':0, 'sentence-stands':0, 'timeout':0 };
   for(let i=0;i<n;i++){
     const ending = simulateOne(profileId, scenarioId, strategy);
     wins[ending] += 1;
@@ -510,14 +532,16 @@ function printGradeReport(){
 function main(){
   const N = 400;
   console.log(`Simulating ${N} playthroughs per profile x scenario x strategy (justice-greedy, escape-greedy)...\n`);
-  console.log('Scenario'.padEnd(14) + 'Profile'.padEnd(16) + 'Justice win%'.padStart(14) + 'Escape win%'.padStart(14));
+  console.log('Scenario'.padEnd(14) + 'Profile'.padEnd(16) + 'Justice win%'.padStart(14) + 'Justice SS%'.padStart(13) + 'Escape win%'.padStart(14) + 'Escape SS%'.padStart(12));
   for(const scenario of SCENARIOS){
     for(const profile of PROFILES){
       const justiceRuns = runBatch(profile.id, scenario.id, 'justice', N);
       const escapeRuns = runBatch(profile.id, scenario.id, 'escape', N);
       const justiceWinPct = (justiceRuns['justice-win'] / N * 100).toFixed(1);
+      const justiceSSPct = (justiceRuns['sentence-stands'] / N * 100).toFixed(1);
       const escapeWinPct = (escapeRuns['escape-win'] / N * 100).toFixed(1);
-      console.log(scenario.id.padEnd(14) + profile.name.padEnd(16) + (justiceWinPct + '%').padStart(14) + (escapeWinPct + '%').padStart(14));
+      const escapeSSPct = (escapeRuns['sentence-stands'] / N * 100).toFixed(1);
+      console.log(scenario.id.padEnd(14) + profile.name.padEnd(16) + (justiceWinPct + '%').padStart(14) + (justiceSSPct + '%').padStart(13) + (escapeWinPct + '%').padStart(14) + (escapeSSPct + '%').padStart(12));
     }
     console.log('');
   }

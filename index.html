@@ -198,6 +198,17 @@
     max-width:480px;
   }
 
+  .loss-block{ margin:22px 0 4px; padding-top:16px; border-top:1px solid var(--line); }
+  .loss-tag{
+    font-family:'Oswald',sans-serif; font-weight:700; font-size:18px; letter-spacing:1px;
+    color:var(--sanction); text-transform:uppercase;
+  }
+
+  .trial-countdown{
+    font-family:'Oswald',sans-serif; font-size:11px; color:var(--ink-dim);
+    letter-spacing:1px; text-align:right; margin-top:4px;
+  }
+
   ::selection{ background:var(--manila); color:#222; }
 </style>
 </head>
@@ -229,10 +240,12 @@ const S = {
   justiceCooldownUntil: 0,
   escapeAttemptsUsed: 0,
   justiceAttemptsUsed: 0,
+  appealsUsed: 0,
+  trialDeadline: null,
   pendingConfirm: null
 };
 
-const SAVE_KEY = 'twoWaysOutSave-v3';
+const SAVE_KEY = 'twoWaysOutSave-v4';
 
 function saveState(){
   try{ localStorage.setItem(SAVE_KEY, JSON.stringify(S)); }catch(e){ /* storage unavailable, ignore */ }
@@ -587,6 +600,29 @@ const JUSTICE_COOLDOWN_DAYS = 25;
 // of escalation, not as an Escape-specific safety net.
 const ESCAPE_ESCALATION_PENALTY = 8; // odds points lost per prior failed attempt
 
+// Trial cycle: a hard calendar deadline running alongside both paths.
+// Hitting it either burns an appeal (pushing the deadline back one more
+// cycle) or, once appeals run out, ends the game outright — but never
+// overwrites a win that already resolved earlier that same day.
+const CYCLE_DAYS = { easy: 35, normal: 38, hard: 42, veryhard: 48 };
+const APPEALS_ALLOWED = { easy: 1, normal: 2, hard: 3, veryhard: 3 };
+
+function checkTrialDeadline(){
+  // a win that already landed today stands — the deadline never overwrites
+  // a resolved outcome, whether or not appeals remain.
+  if(S.over) return;
+  if(S.day < S.trialDeadline) return;
+  const scenarioId = S.scenario.id;
+  if(S.appealsUsed < APPEALS_ALLOWED[scenarioId]){
+    S.appealsUsed += 1;
+    S.trialDeadline += CYCLE_DAYS[scenarioId];
+    S.log += `\n\nAPPEAL GRANTED — Your attorney's motion buys another cycle; the panel didn't so much rule as reschedule. New trial date: day ${S.trialDeadline}. The sentence stands, for now.`;
+  } else {
+    S.over = true;
+    S.ending = 'sentence-stands';
+  }
+}
+
 // Attempting either ending IS that day's action (see tryPresentCase /
 // tryAttemptEscape below, which spend their own day rather than routing
 // through chooseAction) — a failed attempt costs additional days on top of
@@ -731,9 +767,11 @@ function tryAttemptEscape(){
     S.day += totalDays;
     applyDelta({suspicion:Math.round(100*mult), escapePlan:-Math.round(40*mult), connections:-Math.round(20*mult)});
     S.log = `The tunnel map was three years out of date — they rerouted the pipe last winter. Caught at the fence line. It costs you dearly: ${totalDays} days in solitary, your network gutted, every guard now watching your hands instead of your face. Worse — they've seen this move now. Next time will be harder.\n\nYou start rebuilding, if you choose to keep going.`;
+    checkTrialDeadline();
     renderAfterFail();
     return;
   }
+  checkTrialDeadline();
   render();
 }
 
@@ -760,9 +798,11 @@ function tryPresentCase(){
       ? `You have ${remaining} hearing${remaining===1?'':'s'} left before you'll need to wait out a new one.`
       : `That was your last scheduled hearing for now — the board won't see you again for a while.`;
     S.log = `The parole board reads your file, glances at the disciplinary notes sitting beside your appeal, and denies it in four minutes flat. "Insufficient corroboration," the letter says. It costs you ${extraDays} day${extraDays===1?'':'s'} of stalled paperwork on top of today. ${remainingNote}`;
+    checkTrialDeadline();
     render();
     return;
   }
+  checkTrialDeadline();
   render();
 }
 
@@ -798,6 +838,7 @@ function chooseAction(a){
   msg += maybeEvidenceChallenge();
   msg += maybeEvent();
   S.log = msg + S.log; // main narrative first, then any milestone beats that fired today
+  checkTrialDeadline();
   S.expandedCategory = null;
   render();
 }
@@ -998,6 +1039,22 @@ function buildGradeComment(grade){
 }
 
 function endingScreen(){
+  if(S.ending === 'sentence-stands'){
+    return `
+    <div class="ending">
+      <div class="section-label">Case No. 4471 — Closed</div>
+      <h2>SENTENCE UPHELD</h2>
+      <div class="days">${S.day}<span>DAYS FROM THIS MORNING TO THE LAST APPEAL</span></div>
+      <p>The final appeal is denied. The board reads the decision once, flatly, and moves to the next file before you've finished processing it. There's no reversing this from here — whatever the truth was, the record says otherwise now, permanently.</p>
+      <div class="loss-block">
+        <div class="loss-tag">CASE CLOSED &mdash; APPEAL DENIED</div>
+      </div>
+      <p style="color:var(--ink-dim); font-size:12px; font-family:'Oswald',sans-serif; letter-spacing:1px; text-transform:uppercase; margin-top:14px;">Played as ${S.profile.name} &middot; ${S.scenario.tier}</p>
+      <button class="restart" onclick="restart()">Play again as ${S.profile.name}</button>
+      <button class="restart" onclick="changeProfile()" style="margin-top:8px;">Choose a different character</button>
+      <button class="restart" onclick="changeDifficulty()" style="margin-top:8px;">Choose a different case</button>
+    </div>`;
+  }
   const wins = {
     'escape-win': {
       title:'OVER THE WALL',
@@ -1041,6 +1098,8 @@ function resetGameState(){
   S.justiceCooldownUntil = 0;
   S.escapeAttemptsUsed = 0;
   S.justiceAttemptsUsed = 0;
+  S.appealsUsed = 0;
+  S.trialDeadline = S.scenario ? CYCLE_DAYS[S.scenario.id] : null;
   S.pendingConfirm = null;
   S.log = "New cell, same choice. You wake up on the concrete shelf they call a bunk. Nobody's listening yet. Today, you decide what kind of man gets you out.";
   prevStats = { connections:S.connections, evidence:S.evidence, escapePlan:S.escapePlan, suspicion:S.suspicion };
@@ -1105,6 +1164,8 @@ function executePendingConfirm(){
 
 function selectScenario(id){
   S.scenario = SCENARIOS.find(s=>s.id===id);
+  S.appealsUsed = 0;
+  S.trialDeadline = CYCLE_DAYS[id];
   saveState();
   render();
 }
@@ -1205,7 +1266,9 @@ function render(){
   app.innerHTML = `
     <div class="masthead">
       <div><h1>Two Ways Out</h1><div class="case">CASE NO. 4471 &middot; ${S.profile.name.toUpperCase()} &middot; ${S.scenario.tier}</div><button class="restart-link" onclick="confirmRestart()">Abandon case &amp; restart</button><button class="restart-link" onclick="confirmChangeProfile()">Change character</button><button class="restart-link" onclick="confirmChangeDifficulty()">Change difficulty</button></div>
-      <div class="day-badge">${S.day}<span>DAY</span></div>
+      <div class="day-badge">${S.day}<span>DAY</span>
+        <div class="trial-countdown">Trial in ${Math.max(0, S.trialDeadline - S.day)} days</div>
+      </div>
     </div>
 
     ${S.pendingConfirm ? `
@@ -1248,6 +1311,7 @@ function render(){
 }
 
 loadState();
+if(S.scenario && S.trialDeadline == null) S.trialDeadline = CYCLE_DAYS[S.scenario.id]; // guard against saves from before the trial deadline system existed
 render();
 </script>
 </body>
