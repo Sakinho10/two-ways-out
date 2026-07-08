@@ -293,6 +293,8 @@ const S = {
   referenceReturnView: null,
   referencePage: 0,
   day: 1,
+  durationMs: 0,
+  sessionStartTs: null,
   family: 15,
   lawyer: 0,
   media: 0,
@@ -910,6 +912,7 @@ function checkTrialDeadline(){
     S.trialDeadline += CYCLE_DAYS[scenarioId];
     S.log += `\n\nAPPEAL GRANTED — Your attorney's motion buys another cycle; the panel didn't so much rule as reschedule. New trial date: day ${S.trialDeadline}. The sentence stands, for now.`;
   } else {
+    flushSessionTime();
     S.over = true;
     S.ending = 'sentence-stands';
     S.view = 'ending';
@@ -1050,6 +1053,7 @@ function tryAttemptEscape(){
   const chance = computeEscapeChance();
   const roll = rand(1,100);
   if(roll <= chance){
+    flushSessionTime();
     S.over = true; S.ending = 'escape-win'; S.view = 'ending';
   } else {
     const mult = underpreparedMult(chance);
@@ -1078,6 +1082,7 @@ function tryPresentCase(){
   if(S.justiceAttemptsLeft === 0) S.justiceCooldownUntil = S.day + JUSTICE_COOLDOWN_DAYS;
   const roll = rand(1,100);
   if(roll <= chance){
+    flushSessionTime();
     S.over = true; S.ending = 'justice-win'; S.view = 'ending';
   } else {
     const mult = underpreparedMult(chance);
@@ -1225,7 +1230,7 @@ function computeGrade(){
   const elite = scenarioId === 'veryhard' && !!lean && winPath === lean.weak &&
     S.justiceAttemptsUsed === 0 && S.escapeAttemptsUsed === 0 && rawScore >= 120;
 
-  return { letter, rawScore, pathFit, winPath, scenarioId, elite };
+  return { letter, rawScore, pathFit, winPath, scenarioId, elite, durationMs: S.durationMs };
 }
 
 // Base band+path text — 11 letter bands x 2 winning paths.
@@ -1323,7 +1328,7 @@ function endingScreen(){
     <div class="ending">
       <div class="section-label">Case No. 4471 — Closed</div>
       <h2>SENTENCE UPHELD</h2>
-      <div class="days">${S.day}<span>DAYS FROM THIS MORNING TO THE LAST APPEAL</span></div>
+      <div class="days">${S.day}<span>DAYS FROM THIS MORNING TO THE LAST APPEAL</span><span>${formatDuration(S.durationMs)} OF REAL TIME</span></div>
       <p>The final appeal is denied. The board reads the decision once, flatly, and moves to the next file before you've finished processing it. There's no reversing this from here — whatever the truth was, the record says otherwise now, permanently.</p>
       <div class="loss-block">
         <div class="loss-tag">CASE CLOSED &mdash; APPEAL DENIED</div>
@@ -1351,7 +1356,7 @@ function endingScreen(){
   <div class="ending">
     <div class="section-label">Case No. 4471 — Closed</div>
     <h2>${w.title}</h2>
-    <div class="days">${S.day}<span>DAYS FROM THIS MORNING TO THE GATE</span></div>
+    <div class="days">${S.day}<span>DAYS FROM THIS MORNING TO THE GATE</span><span>${formatDuration(grade.durationMs)} OF REAL TIME</span></div>
     <p>${w.body}</p>
     <div class="grade-block">
       <div class="grade-letter">${grade.letter}</div>
@@ -1368,7 +1373,8 @@ function endingScreen(){
 
 function resetGameState(){
   const famStart = S.scenario ? S.scenario.family.start : 15;
-  S.day=1; S.family=famStart; S.lawyer=0; S.media=0; S.pipelineMilestones={}; S.pipelineBonus=0;
+  S.day=1; S.durationMs=0; S.sessionStartTs=null;
+  S.family=famStart; S.lawyer=0; S.media=0; S.pipelineMilestones={}; S.pipelineBonus=0;
   S.connections=15; S.evidence=5; S.escapePlan=5; S.suspicion=10;
   S.over=false; S.ending=null;
   S.lastActionId=null; S.actionStreak=0;
@@ -1397,6 +1403,7 @@ function restart(){
   resetGameState();
   clearSave();
   S.view = 'game';
+  resumeSessionTime();
   render();
 }
 
@@ -1466,6 +1473,7 @@ function selectProfile(id){
   S.profile = PROFILES.find(p=>p.id===id);
   if(S.scenario) drawTodayMoves(); // day 1 — both profile and scenario are now set
   S.view = 'game';
+  resumeSessionTime();
   saveState();
   render();
 }
@@ -1551,6 +1559,33 @@ function hasActiveGame(){
   return !!(S.scenario && S.profile && !S.over);
 }
 
+// ---------------------------------------------------------------------
+// Real-world play duration — a pure statistic for a future Ranking table.
+// Never read by grading. Ticks only while S.view is 'game' and the tab is
+// visible; paused on tab-hide/pagehide and finalized once the game ends.
+// ---------------------------------------------------------------------
+function flushSessionTime(){
+  if(S.sessionStartTs != null){
+    S.durationMs += Date.now() - S.sessionStartTs;
+    S.sessionStartTs = null;
+  }
+}
+
+function resumeSessionTime(){
+  if(S.view === 'game' && hasActiveGame() && S.sessionStartTs == null){
+    S.sessionStartTs = Date.now();
+  }
+}
+
+function formatDuration(ms){
+  const totalMinutes = Math.round(ms / 60000);
+  if(totalMinutes < 60) return `${totalMinutes} minute${totalMinutes===1?'':'s'}`;
+  const hours = Math.floor(totalMinutes / 60);
+  const minutes = totalMinutes % 60;
+  const hourStr = `${hours} hour${hours===1?'':'s'}`;
+  return minutes > 0 ? `${hourStr} ${minutes} minute${minutes===1?'':'s'}` : hourStr;
+}
+
 function goToPlay(){
   if(hasActiveGame()){
     S.pendingConfirm = 'goToPlay';
@@ -1572,6 +1607,7 @@ function startNewGame(){
 function continueGame(){
   if(!hasActiveGame()) return;
   S.view = 'game';
+  resumeSessionTime();
   render();
 }
 
@@ -1808,6 +1844,12 @@ function render(){
 }
 
 loadState();
+// a fresh page load starts a brand-new JS context — any sessionStartTs
+// carried over from before the reload (or a crash that skipped pagehide)
+// is stale and must not be trusted; the timer only resumes once the
+// game view is actually reached again (see resumeSessionTime() callers).
+S.sessionStartTs = null;
+if(!Number.isFinite(S.durationMs)) S.durationMs = 0;
 if(S.scenario && S.trialDeadline == null) S.trialDeadline = CYCLE_DAYS[S.scenario.id]; // guard against saves from before the trial deadline system existed
 // guard against saves from before the dynamic move pool existed, or a
 // corrupt/missing draw — reloading mid-decision must otherwise show the
@@ -1826,6 +1868,20 @@ S.view = 'home';
 S.referenceOpen = false;
 S.referenceReturnView = null;
 render();
+
+document.addEventListener('visibilitychange', () => {
+  if(document.hidden){
+    flushSessionTime();
+    saveState();
+  } else {
+    resumeSessionTime();
+  }
+});
+
+window.addEventListener('pagehide', () => {
+  flushSessionTime();
+  saveState();
+});
 </script>
 </body>
 </html>
