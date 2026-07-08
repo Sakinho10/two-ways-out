@@ -1239,6 +1239,7 @@ function executePendingConfirm(){
   if(S.pendingConfirm === 'restart') restart();
   else if(S.pendingConfirm === 'changeProfile') changeProfile();
   else if(S.pendingConfirm === 'changeDifficulty') changeDifficulty();
+  else if(S.pendingConfirm === 'goToPlay') startNewGame();
 }
 
 function selectScenario(id){
@@ -1337,6 +1338,15 @@ function hasActiveGame(){
 }
 
 function goToPlay(){
+  if(hasActiveGame()){
+    S.pendingConfirm = 'goToPlay';
+    render();
+    return;
+  }
+  startNewGame();
+}
+
+function startNewGame(){
   resetGameState();
   S.profile = null;
   S.scenario = null;
@@ -1401,6 +1411,14 @@ function renderHomeView(){
   <div class="masthead">
     <div><h1>Two Ways Out</h1><div class="case">CASE NO. 4471</div></div>
   </div>
+  ${S.pendingConfirm === 'goToPlay' ? `
+  <div class="confirm-banner">
+    <div class="msg">Starting a new case means walking away from this one for good. Sure?</div>
+    <div class="btns">
+      <button class="confirm-yes" onclick="executePendingConfirm()">Abandon and start new</button>
+      <button onclick="cancelPendingConfirm()">Never mind</button>
+    </div>
+  </div>` : ''}
   <div class="home-card">
     <div class="home-title">Case No. 4471</div>
     <div class="home-subtitle">Two Ways Out</div>
