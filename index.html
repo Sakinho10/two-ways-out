@@ -209,6 +209,77 @@
     letter-spacing:1px; text-align:right; margin-top:4px;
   }
 
+  /* home / title-card screen */
+  .home-card{
+    background:var(--concrete-panel); border:1px solid var(--line);
+    padding:28px 22px; margin-bottom:10px;
+  }
+  .home-title{
+    font-family:'Oswald',sans-serif; font-weight:700; letter-spacing:3px;
+    font-size:15px; color:var(--rust); text-transform:uppercase; margin-bottom:6px;
+  }
+  .home-subtitle{
+    font-family:'Special Elite',monospace; font-size:32px; color:var(--manila);
+    margin-bottom:18px;
+  }
+  .home-body{
+    font-size:15px; line-height:1.65; color:var(--ink); margin:0 0 8px;
+  }
+  .home-links{ display:flex; flex-direction:column; gap:8px; margin-top:6px; }
+  .home-link{
+    background:none; border:none; color:var(--manila-dim);
+    text-decoration:underline; text-underline-offset:2px;
+    font-family:'Oswald',sans-serif; font-size:13px; letter-spacing:.5px;
+    text-align:left; padding:6px 2px; cursor:pointer;
+    -webkit-tap-highlight-color:transparent;
+  }
+  .home-link:active{ color:var(--manila); }
+
+  /* masthead reference ("?") button */
+  .ref-btn{
+    font-family:'Oswald',sans-serif; font-weight:700; font-size:13px;
+    width:24px; height:24px; border-radius:50%; flex:none;
+    border:1px solid var(--ink-dim); color:var(--ink-dim); background:none;
+    cursor:pointer; -webkit-tap-highlight-color:transparent;
+  }
+  .ref-btn:active{ color:var(--ink); border-color:var(--ink); }
+
+  /* reference overlay */
+  .ref-overlay{
+    position:fixed; inset:0; background:rgba(18,16,13,.93);
+    display:flex; justify-content:center; padding:24px 12px;
+    padding-top:max(24px, env(safe-area-inset-top));
+    padding-bottom:max(24px, env(safe-area-inset-bottom));
+    overflow-y:auto; z-index:500;
+  }
+  .ref-panel{
+    background:var(--concrete-panel); border:1px solid var(--line);
+    width:100%; max-width:640px; padding:18px 18px 20px; height:fit-content;
+  }
+  .ref-header{
+    display:flex; justify-content:space-between; align-items:center; margin-bottom:12px;
+  }
+  .ref-close{
+    background:none; border:1px solid var(--line); color:var(--ink);
+    font-size:18px; line-height:1; padding:5px 11px; cursor:pointer;
+    font-family:'Oswald',sans-serif; -webkit-tap-highlight-color:transparent;
+  }
+  .ref-close:active{ color:var(--manila); }
+  .ref-tabs{ display:flex; flex-wrap:wrap; gap:6px; margin-bottom:14px; }
+  .ref-tab{
+    font-family:'Oswald',sans-serif; font-size:11px; letter-spacing:.5px; text-transform:uppercase;
+    background:var(--concrete); border:1px solid var(--line); color:var(--ink-dim);
+    padding:7px 9px; cursor:pointer; -webkit-tap-highlight-color:transparent;
+  }
+  .ref-tab.active{ color:var(--manila); border-color:var(--manila-dim); }
+  .ref-body{
+    font-size:15px; line-height:1.65; color:var(--ink); margin-bottom:16px;
+    white-space:pre-wrap;
+  }
+  .ref-nav{ display:flex; gap:10px; }
+  .ref-nav .back-btn{ border:1px solid var(--line); padding:8px 12px; margin:0; }
+  .ref-nav .back-btn:disabled{ opacity:.3; cursor:not-allowed; }
+
   ::selection{ background:var(--manila); color:#222; }
 </style>
 </head>
@@ -217,6 +288,10 @@
 
 <script>
 const S = {
+  view: 'home',
+  referenceOpen: false,
+  referenceReturnView: null,
+  referencePage: 0,
   day: 1,
   family: 15,
   lawyer: 0,
@@ -620,6 +695,7 @@ function checkTrialDeadline(){
   } else {
     S.over = true;
     S.ending = 'sentence-stands';
+    S.view = 'ending';
   }
 }
 
@@ -757,7 +833,7 @@ function tryAttemptEscape(){
   const chance = computeEscapeChance();
   const roll = rand(1,100);
   if(roll <= chance){
-    S.over = true; S.ending = 'escape-win';
+    S.over = true; S.ending = 'escape-win'; S.view = 'ending';
   } else {
     const mult = underpreparedMult(chance);
     const baseDays = rand(10,25);
@@ -784,7 +860,7 @@ function tryPresentCase(){
   if(S.justiceAttemptsLeft === 0) S.justiceCooldownUntil = S.day + JUSTICE_COOLDOWN_DAYS;
   const roll = rand(1,100);
   if(roll <= chance){
-    S.over = true; S.ending = 'justice-win';
+    S.over = true; S.ending = 'justice-win'; S.view = 'ending';
   } else {
     const mult = underpreparedMult(chance);
     const credibilityFactor = rampEfficiency(S.lawyer, S.scenario.scrutiny.lawyerThreshold, 0.55);
@@ -1109,6 +1185,7 @@ function restart(){
   // keeps the current profile — a fresh case, same character
   resetGameState();
   clearSave();
+  S.view = 'game';
   render();
 }
 
@@ -1117,6 +1194,7 @@ function changeProfile(){
   resetGameState();
   S.profile = null;
   clearSave();
+  S.view = 'profile';
   render();
 }
 
@@ -1127,6 +1205,7 @@ function changeDifficulty(){
   S.profile = null;
   S.scenario = null;
   clearSave();
+  S.view = 'scenario';
   render();
 }
 
@@ -1166,67 +1245,234 @@ function selectScenario(id){
   S.scenario = SCENARIOS.find(s=>s.id===id);
   S.appealsUsed = 0;
   S.trialDeadline = CYCLE_DAYS[id];
+  S.view = 'profile';
   saveState();
   render();
 }
 
 function selectProfile(id){
   S.profile = PROFILES.find(p=>p.id===id);
+  S.view = 'game';
   saveState();
   render();
 }
 
-function render(){
-  const app = document.getElementById('app');
-  if(S.over){
-    app.innerHTML = `
-      <div class="masthead">
-        <div><h1>Two Ways Out</h1><div class="case">CASE NO. 4471</div></div>
-      </div>
-      ${endingScreen()}
-    `;
-    clearSave();
-    return;
-  }
+// ---------------------------------------------------------------------
+// Reference overlay — 5 static pages of in-world explanation, reachable
+// from Home's direct links or the masthead "?" icon during play. Opening
+// or closing it never touches game state; it only swaps S.view/S.referenceOpen.
+// ---------------------------------------------------------------------
 
-  if(!S.scenario){
-    app.innerHTML = `
-      <div class="masthead">
-        <div><h1>Two Ways Out</h1><div class="case">CASE NO. 4471</div></div>
-      </div>
-      <div class="section-label">Which case is this?</div>
-      <div class="actions">
-        ${SCENARIOS.map(s=>`
-          <button class="category" onclick="selectScenario('${s.id}')">
-            ${s.tier} &middot; ${s.name}
-            <span class="desc">${s.tagline}<br><br>${s.teaser}</span>
-          </button>
-        `).join('')}
-      </div>
-    `;
-    saveState();
-    return;
-  }
+const REFERENCE_PAGES = [
+  {
+    title: 'The Case',
+    body: `You're inside for something you didn't do. There are two ways out: prove it, or leave without asking permission.
 
-  if(!S.profile){
-    app.innerHTML = `
-      <div class="masthead">
-        <div><h1>Two Ways Out</h1><div class="case">CASE NO. 4471 &middot; ${S.scenario.tier}</div></div>
-      </div>
-      <div class="section-label">Who are you, in here?</div>
-      <div class="actions">
-        ${PROFILES.map(p=>`
-          <button class="category" onclick="selectProfile('${p.id}')">
-            ${p.name}
-            <span class="desc">${p.tagline}<br>${p.desc}<br>INT ${p.stats.intellect} · PHY ${p.stats.physique} · CHA ${p.stats.charisma} · COM ${p.stats.composure}</span>
-          </button>
-        `).join('')}
-      </div>
-    `;
-    saveState();
-    return;
-  }
+The Justice path means building a case strong enough that the parole board has no real choice — evidence, credibility, the people willing to vouch for you. The Escape path means building a way through the building itself — allies, timing, tools, nerve.
 
+Every day, you get one move. Some days that move is building toward one of those paths. Once you think you're ready, presenting your case or making a run for it takes the whole day too — there's no doing both.
+
+The court doesn't wait forever. Your case comes up for review on a set date. Miss it without a resolution, and you can appeal — but only so many times. Run out of appeals, and the sentence stands. Permanently.
+
+Four cases are on file, each harder than the last — a robbery, a murder, a killing that made the papers, and one the whole country watched. The higher the profile, the tighter the walls and the colder the file gets.`
+  },
+  {
+    title: 'Your Moves',
+    body: `Some days you build toward getting out through the front door:
+
+  Volunteer in the law library — slow, steady evidence work.
+  Do a guard a quiet favor — builds trust with the people who can vouch for you.
+  Write to your lawyer & family — the people on the outside are how a case actually moves. Family first. Then a lawyer takes it seriously. Eventually, if it's big enough, the papers do too.
+
+Other days you build toward getting out the hard way:
+
+  Trade favors with the cellblock crew — connections, and pieces of a plan.
+  Scout the guard rotations — timing, patience, information.
+  Bribe a guard for tools — expensive, fast, and impossible to take back.
+
+Some days, the smartest move is nothing at all — keeping your head down costs you a day but buys you room to breathe.
+
+When you're ready to try an ending, that attempt IS your day — you're not building anything else on top of it. Walking in confident is safer than walking in desperate; a case or a plan that isn't ready yet costs you more if it falls apart than one that was genuinely close.
+
+The board will only hear you so many times before they stop listening for a while. The fence doesn't forget a failed run either — every attempt makes guards watch harder, and the next try costs you more than the last.`
+  },
+  {
+    title: 'Who You Are',
+    body: `Four people end up telling this story differently.
+
+The Strategist — a sharp, patient mind. Builds a case the way you'd build an argument: carefully, and it holds up. Not built for the kind of risk that requires outrunning anyone.
+
+The Gentle Giant — size and quiet strength most people don't test twice. Doors open different ways for a man like this. Reading a case file cover to cover has never been the plan.
+
+The Manipulator — knows exactly what to say and when. People believe him faster than they should. Doesn't handle pressure as well as he handles people.
+
+The Everyman — nothing you'd point to as remarkable. No real weaknesses either. Whatever gets him out, he'll get there steady.`
+  },
+  {
+    title: 'How It All Connects',
+    body: `What you're naturally good at shapes what actually works for you in here.
+
+A sharp mind sharpens the moves built on evidence and paperwork — and raises your odds when the case finally gets heard.
+
+Physical presence sharpens the moves built on risk and force — and raises your odds when you're the one going over the wall.
+
+Charisma sharpens the moves built on people — guards, cellmates, the crew — and it's what actually moves your credibility with the outside world.
+
+A level head doesn't build anything on its own, but it softens how hard suspicion hits you when things go sideways.
+
+Playing to what you're naturally good at is the safer road. Playing against your own grain is harder, costs more, and takes longer to pay off — but a case solved against the grain gets remembered differently than one solved the easy way.`
+  },
+  {
+    title: 'Judgment',
+    body: `Getting out isn't the only thing being measured.
+
+How long it took you matters — a case that drags on for months doesn't read the same as one closed fast. Whether the way you got out matches who you are matters too — and sometimes going against your own nature counts for more than playing it safe. How many times you had to try before it finally worked doesn't go unnoticed either.
+
+Very few case files in this cabinet are ever closed without a mark against them somewhere. Fewer still are closed on the first try, against the odds, on the hardest case on record. Those don't just get a good grade. They get remembered.`
+  }
+];
+
+function hasActiveGame(){
+  return !!(S.scenario && S.profile && !S.over);
+}
+
+function goToPlay(){
+  resetGameState();
+  S.profile = null;
+  S.scenario = null;
+  clearSave();
+  S.view = 'scenario';
+  render();
+}
+
+function continueGame(){
+  if(!hasActiveGame()) return;
+  S.view = 'game';
+  render();
+}
+
+function openReference(page){
+  S.referenceReturnView = S.view;
+  S.referenceOpen = true;
+  S.referencePage = page;
+  render();
+}
+
+function closeReference(){
+  S.referenceOpen = false;
+  S.view = S.referenceReturnView;
+  S.referenceReturnView = null;
+  render();
+}
+
+function refGoto(page){
+  S.referencePage = Math.max(0, Math.min(REFERENCE_PAGES.length-1, page));
+  render();
+}
+
+function refButtonHtml(){
+  return `<button class="ref-btn" onclick="openReference(0)" aria-label="Case reference">?</button>`;
+}
+
+function referenceOverlayHtml(){
+  const page = REFERENCE_PAGES[S.referencePage];
+  return `
+  <div class="ref-overlay">
+    <div class="ref-panel">
+      <div class="ref-header">
+        <div class="section-label" style="margin:0;">Case Reference</div>
+        <button class="ref-close" onclick="closeReference()">&times;</button>
+      </div>
+      <div class="ref-tabs">
+        ${REFERENCE_PAGES.map((p,i)=>`<button class="ref-tab ${i===S.referencePage?'active':''}" onclick="refGoto(${i})">${p.title}</button>`).join('')}
+      </div>
+      <div class="ref-body">${page.body}</div>
+      <div class="ref-nav">
+        <button class="back-btn" ${S.referencePage===0?'disabled':''} onclick="refGoto(S.referencePage-1)">&larr; Prev</button>
+        <button class="back-btn" style="margin-left:auto;" ${S.referencePage===REFERENCE_PAGES.length-1?'disabled':''} onclick="refGoto(S.referencePage+1)">Next &rarr;</button>
+      </div>
+    </div>
+  </div>`;
+}
+
+function renderHomeView(){
+  const continueAvailable = hasActiveGame();
+  return `
+  <div class="masthead">
+    <div><h1>Two Ways Out</h1><div class="case">CASE NO. 4471</div></div>
+  </div>
+  <div class="home-card">
+    <div class="home-title">Case No. 4471</div>
+    <div class="home-subtitle">Two Ways Out</div>
+    <p class="home-body">You didn't do it. Nobody in here believes that anymore — not your cellmate, not the guard on nights, maybe not even you, some days. But the file's still open, and there are two ways it closes: they let you go, or you go anyway.</p>
+    <div class="actions" style="margin-top:18px; margin-bottom:0;">
+      <button class="action attempt" onclick="goToPlay()">Play</button>
+      ${continueAvailable ? `<button class="action attempt esc" onclick="continueGame()">Continue</button>` : ''}
+    </div>
+  </div>
+  <div class="section-label">Learn the case</div>
+  <div class="home-links">
+    ${REFERENCE_PAGES.map((p,i)=>`<button class="home-link" onclick="openReference(${i})">${p.title}</button>`).join('')}
+  </div>
+  `;
+}
+
+function renderEndingView(){
+  return `
+    <div class="masthead">
+      <div><h1>Two Ways Out</h1><div class="case">CASE NO. 4471</div></div>
+    </div>
+    ${endingScreen()}
+  `;
+}
+
+function renderScenarioView(){
+  return `
+    <div class="masthead">
+      <div>
+        <div style="display:flex;align-items:center;gap:8px;">
+          <h1 style="margin:0;">Two Ways Out</h1>
+          ${refButtonHtml()}
+        </div>
+        <div class="case">CASE NO. 4471</div>
+      </div>
+    </div>
+    <div class="section-label">Which case is this?</div>
+    <div class="actions">
+      ${SCENARIOS.map(s=>`
+        <button class="category" onclick="selectScenario('${s.id}')">
+          ${s.tier} &middot; ${s.name}
+          <span class="desc">${s.tagline}<br><br>${s.teaser}</span>
+        </button>
+      `).join('')}
+    </div>
+  `;
+}
+
+function renderProfileView(){
+  return `
+    <div class="masthead">
+      <div>
+        <div style="display:flex;align-items:center;gap:8px;">
+          <h1 style="margin:0;">Two Ways Out</h1>
+          ${refButtonHtml()}
+        </div>
+        <div class="case">CASE NO. 4471 &middot; ${S.scenario.tier}</div>
+      </div>
+    </div>
+    <div class="section-label">Who are you, in here?</div>
+    <div class="actions">
+      ${PROFILES.map(p=>`
+        <button class="category" onclick="selectProfile('${p.id}')">
+          ${p.name}
+          <span class="desc">${p.tagline}<br>${p.desc}<br>INT ${p.stats.intellect} · PHY ${p.stats.physique} · CHA ${p.stats.charisma} · COM ${p.stats.composure}</span>
+        </button>
+      `).join('')}
+    </div>
+  `;
+}
+
+function renderGameView(){
   maybeRegenJusticeAttempt();
 
   const justiceChance = computeJusticeChance();
@@ -1263,9 +1509,15 @@ function render(){
       </div>`;
   }
 
-  app.innerHTML = `
+  const html = `
     <div class="masthead">
-      <div><h1>Two Ways Out</h1><div class="case">CASE NO. 4471 &middot; ${S.profile.name.toUpperCase()} &middot; ${S.scenario.tier}</div><button class="restart-link" onclick="confirmRestart()">Abandon case &amp; restart</button><button class="restart-link" onclick="confirmChangeProfile()">Change character</button><button class="restart-link" onclick="confirmChangeDifficulty()">Change difficulty</button></div>
+      <div>
+        <div style="display:flex;align-items:center;gap:8px;">
+          <h1 style="margin:0;">Two Ways Out</h1>
+          ${refButtonHtml()}
+        </div>
+        <div class="case">CASE NO. 4471 &middot; ${S.profile.name.toUpperCase()} &middot; ${S.scenario.tier}</div><button class="restart-link" onclick="confirmRestart()">Abandon case &amp; restart</button><button class="restart-link" onclick="confirmChangeProfile()">Change character</button><button class="restart-link" onclick="confirmChangeDifficulty()">Change difficulty</button>
+      </div>
       <div class="day-badge">${S.day}<span>DAY</span>
         <div class="trial-countdown">Trial in ${Math.max(0, S.trialDeadline - S.day)} days</div>
       </div>
@@ -1307,11 +1559,41 @@ function render(){
   `;
 
   prevStats = { connections:S.connections, evidence:S.evidence, escapePlan:S.escapePlan, suspicion:S.suspicion };
+  return html;
+}
+
+function render(){
+  const app = document.getElementById('app');
+
+  if(S.view === 'ending'){
+    app.innerHTML = renderEndingView();
+    clearSave();
+    return;
+  }
+
+  let mainHtml;
+  if(S.view === 'scenario'){
+    mainHtml = renderScenarioView();
+  } else if(S.view === 'profile'){
+    mainHtml = renderProfileView();
+  } else if(S.view === 'game'){
+    mainHtml = renderGameView();
+  } else {
+    mainHtml = renderHomeView();
+  }
+
+  app.innerHTML = mainHtml + (S.referenceOpen ? referenceOverlayHtml() : '');
   saveState();
 }
 
 loadState();
 if(S.scenario && S.trialDeadline == null) S.trialDeadline = CYCLE_DAYS[S.scenario.id]; // guard against saves from before the trial deadline system existed
+// Home is always the entry point on load — an in-progress game is offered
+// via Continue rather than auto-resumed into, and any overlay state from a
+// prior session shouldn't carry over onto a freshly loaded screen.
+S.view = 'home';
+S.referenceOpen = false;
+S.referenceReturnView = null;
 render();
 </script>
 </body>
