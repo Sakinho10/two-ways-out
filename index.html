@@ -48,6 +48,11 @@
     font-family:'Oswald',sans-serif; font-weight:700; letter-spacing:2px;
     font-size:22px; margin:0; color:var(--ink); text-transform:uppercase;
   }
+  .masthead h1.tappable{
+    cursor:pointer; -webkit-tap-highlight-color:transparent;
+  }
+  .masthead h1.tappable:hover{ color:var(--manila-dim); }
+  .masthead h1.tappable:active{ color:var(--manila); }
   .masthead .case{
     font-family:'Oswald',sans-serif; font-size:13px; color:var(--ink-dim);
     letter-spacing:1px;
@@ -1878,6 +1883,12 @@ function continueGame(){
   render();
 }
 
+function goHome(){
+  flushSessionTime();
+  S.view = 'home';
+  render();
+}
+
 function openReference(page){
   S.referenceReturnView = S.view;
   S.referenceOpen = true;
@@ -1970,7 +1981,7 @@ function renderScenarioView(){
     <div class="masthead">
       <div>
         <div style="display:flex;align-items:center;gap:8px;">
-          <h1 style="margin:0;">Two Ways Out</h1>
+          <h1 class="tappable" style="margin:0;" onclick="goHome()">Two Ways Out</h1>
           ${refButtonHtml()}
         </div>
         <div class="case">CASE NO. 4471</div>
@@ -1993,7 +2004,7 @@ function renderProfileView(){
     <div class="masthead">
       <div>
         <div style="display:flex;align-items:center;gap:8px;">
-          <h1 style="margin:0;">Two Ways Out</h1>
+          <h1 class="tappable" style="margin:0;" onclick="goHome()">Two Ways Out</h1>
           ${refButtonHtml()}
         </div>
         <div class="case">CASE NO. 4471 &middot; ${S.scenario.tier}</div>
@@ -2042,7 +2053,7 @@ function renderGameView(){
     <div class="masthead">
       <div>
         <div style="display:flex;align-items:center;gap:8px;">
-          <h1 style="margin:0;">Two Ways Out</h1>
+          <h1 class="tappable" style="margin:0;" onclick="goHome()">Two Ways Out</h1>
           ${refButtonHtml()}
         </div>
         <div class="case">CASE NO. 4471 &middot; ${S.profile.name.toUpperCase()} &middot; ${S.scenario.tier}</div><button class="restart-link" onclick="confirmRestart()">Abandon case &amp; restart</button><button class="restart-link" onclick="confirmChangeProfile()">Change character</button><button class="restart-link" onclick="confirmChangeDifficulty()">Change difficulty</button>
