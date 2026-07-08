@@ -307,6 +307,16 @@
     font-family:'Oswald',sans-serif; font-size:13px; letter-spacing:.5px; color:var(--manila);
     margin:16px auto 0; max-width:480px; text-align:center;
   }
+  .share-note{
+    font-family:'Oswald',sans-serif; font-size:12px; letter-spacing:.5px; color:var(--manila-dim);
+    margin:8px auto 0; max-width:480px; text-align:center;
+  }
+  .share-manual{
+    display:block; width:100%; max-width:480px; margin:8px auto 0;
+    font-family:'Special Elite',monospace; font-size:13px; line-height:1.5;
+    background:var(--concrete-panel); border:1px solid var(--line); color:var(--ink);
+    padding:10px 12px; resize:none;
+  }
   .lb-tabs{ display:flex; flex-wrap:wrap; gap:6px; margin-bottom:14px; }
   .lb-list{ display:flex; flex-direction:column; gap:6px; }
   .lb-row{
@@ -335,6 +345,8 @@
 const SUPABASE_URL = 'https://kyuzjtxrgkqlbezxcefi.supabase.co';
 const SUPABASE_KEY = 'sb_publishable_oGlIMdfYzK2JL-yayy7fHQ_mn4wjFof';
 const LEADERBOARD_TABLE = 'leaderboard';
+// Update once the custom domain discussed in an earlier session is live.
+const SHARE_URL = 'https://sakinho10.github.io/two-ways-out';
 
 const S = {
   view: 'home',
@@ -380,7 +392,9 @@ const S = {
   justiceAttemptsUsed: 0,
   appealsUsed: 0,
   trialDeadline: null,
-  pendingConfirm: null
+  pendingConfirm: null,
+  shareStatus: null, // null | 'copied' | 'manual' | 'error'
+  shareError: null
 };
 
 const SAVE_KEY = 'twoWaysOutSave-v4';
@@ -1588,6 +1602,58 @@ function renderLeaderboardView(){
   `;
 }
 
+function buildShareText(){
+  if(S.ending === 'sentence-stands'){
+    return `CASE NO. 4471 — SENTENCE UPHELD\n${S.profile.name} · ${S.scenario.tier}\n${S.day} days · Appeals exhausted\n${SHARE_URL}`;
+  }
+  const grade = computeGrade();
+  const pathName = grade.winPath === 'justice' ? 'Justice' : 'Escape';
+  return `CASE NO. 4471 — CLOSED\n${S.profile.name} · ${S.scenario.tier} · ${pathName}${grade.elite ? ' · ELITE' : ''}\n${S.day} days · Grade: ${grade.letter}\n${SHARE_URL}`;
+}
+
+async function shareResult(){
+  const text = buildShareText();
+  if(navigator.share){
+    try{
+      await navigator.share({ text });
+    }catch(err){
+      if(err && err.name === 'AbortError') return;
+      S.shareStatus = 'error';
+      S.shareError = "Couldn't open the share sheet.";
+      render();
+    }
+    return;
+  }
+  if(navigator.clipboard && navigator.clipboard.writeText){
+    try{
+      await navigator.clipboard.writeText(text);
+      S.shareStatus = 'copied';
+      render();
+      return;
+    }catch(err){
+      // fall through to the manual-copy textarea below
+    }
+  }
+  S.shareStatus = 'manual';
+  render();
+}
+
+function shareBlock(){
+  let note = '';
+  if(S.shareStatus === 'copied'){
+    note = `<div class="share-note">Copied to clipboard.</div>`;
+  } else if(S.shareStatus === 'manual'){
+    note = `
+    <div class="share-note">Copy this text manually:</div>
+    <textarea class="share-manual" rows="4" readonly onclick="this.select()">${escapeHtml(buildShareText())}</textarea>`;
+  } else if(S.shareStatus === 'error'){
+    note = `<div class="share-note">${escapeHtml(S.shareError || '')}</div>`;
+  }
+  return `
+  <button class="restart" onclick="shareResult()" style="margin-top:8px;">Share Result</button>
+  ${note}`;
+}
+
 function endingScreen(){
   if(S.ending === 'sentence-stands'){
     return `
@@ -1600,6 +1666,7 @@ function endingScreen(){
         <div class="loss-tag">CASE CLOSED &mdash; APPEAL DENIED</div>
       </div>
       <p style="color:var(--ink-dim); font-size:12px; font-family:'Oswald',sans-serif; letter-spacing:1px; text-transform:uppercase; margin-top:14px;">Played as ${S.profile.name} &middot; ${S.scenario.tier}</p>
+      ${shareBlock()}
       <button class="restart" onclick="restart()">Play again as ${S.profile.name}</button>
       <button class="restart" onclick="changeProfile()" style="margin-top:8px;">Choose a different character</button>
       <button class="restart" onclick="changeDifficulty()" style="margin-top:8px;">Choose a different case</button>
@@ -1632,6 +1699,7 @@ function endingScreen(){
     </div>
     ${leaderboardSubmitBlock()}
     <p style="color:var(--ink-dim); font-size:12px; font-family:'Oswald',sans-serif; letter-spacing:1px; text-transform:uppercase; margin-top:14px;">Played as ${S.profile.name} &middot; ${S.scenario.tier}</p>
+    ${shareBlock()}
     <button class="restart" onclick="restart()">Play again as ${S.profile.name}</button>
     <button class="restart" onclick="changeProfile()" style="margin-top:8px;">Choose a different character</button>
     <button class="restart" onclick="changeDifficulty()" style="margin-top:8px;">Choose a different case</button>
@@ -1658,6 +1726,8 @@ function resetGameState(){
   S.submitError = null;
   S.editingHandle = false;
   S.handleError = null;
+  S.shareStatus = null;
+  S.shareError = null;
   S.unlockedMoveIds = [];
   S.todayMoves = [];
   S.log = "New cell, same choice. You wake up on the concrete shelf they call a bunk. Nobody's listening yet. Today, you decide what kind of man gets you out.";
