@@ -602,19 +602,18 @@ const ESCAPE_ESCALATION_PENALTY = 8; // odds points lost per prior failed attemp
 
 // Trial cycle: a hard calendar deadline running alongside both paths.
 // Hitting it either burns an appeal (pushing the deadline back one more
-// cycle) or, once appeals run out, ends the game outright — regardless of
-// what that day's action otherwise accomplished.
+// cycle) or, once appeals run out, ends the game outright — but never
+// overwrites a win that already resolved earlier that same day.
 const CYCLE_DAYS = { easy: 35, normal: 38, hard: 42, veryhard: 48 };
 const APPEALS_ALLOWED = { easy: 1, normal: 2, hard: 3, veryhard: 3 };
 
 function checkTrialDeadline(){
+  // a win that already landed today stands — the deadline never overwrites
+  // a resolved outcome, whether or not appeals remain.
+  if(S.over) return;
   if(S.day < S.trialDeadline) return;
   const scenarioId = S.scenario.id;
   if(S.appealsUsed < APPEALS_ALLOWED[scenarioId]){
-    // an already-resolved day (a win landed the same day the clock ran out)
-    // doesn't need a future trial date — only the exhausted-appeals branch
-    // below is allowed to override a win in progress.
-    if(S.over) return;
     S.appealsUsed += 1;
     S.trialDeadline += CYCLE_DAYS[scenarioId];
     S.log += `\n\nAPPEAL GRANTED — Your attorney's motion buys another cycle; the panel didn't so much rule as reschedule. New trial date: day ${S.trialDeadline}. The sentence stands, for now.`;

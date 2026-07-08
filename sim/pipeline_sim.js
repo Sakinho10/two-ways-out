@@ -190,10 +190,10 @@ const CYCLE_DAYS = { easy: 35, normal: 38, hard: 42, veryhard: 48 };
 const APPEALS_ALLOWED = { easy: 1, normal: 2, hard: 3, veryhard: 3 };
 
 function checkTrialDeadline(S){
+  if(S.over) return;
   if(S.day < S.trialDeadline) return;
   const scenarioId = S.scenario.id;
   if(S.appealsUsed < APPEALS_ALLOWED[scenarioId]){
-    if(S.over) return;
     S.appealsUsed += 1;
     S.trialDeadline += CYCLE_DAYS[scenarioId];
   } else {
