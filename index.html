@@ -318,6 +318,7 @@
     padding:10px 12px; resize:none;
   }
   .lb-tabs{ display:flex; flex-wrap:wrap; gap:6px; margin-bottom:14px; }
+  .ref-tab-difficulty.active{ color:var(--rust); border-color:var(--rust); }
   .lb-list{ display:flex; flex-direction:column; gap:6px; }
   .lb-row{
     display:flex; align-items:center; gap:10px;
@@ -362,7 +363,8 @@ const S = {
   leaderboardEntries: null,
   leaderboardLoading: false,
   leaderboardError: null,
-  leaderboardFilter: 'all',
+  leaderboardProfileFilter: 'all',
+  leaderboardScenarioFilter: 'all',
   leaderboardReturnView: null,
   day: 1,
   durationMs: 0,
@@ -1508,12 +1510,20 @@ function leaderboardSubmitBlock(){
   return html;
 }
 
-const LEADERBOARD_FILTERS = [
+const LEADERBOARD_PROFILE_FILTERS = [
   { id:'all', label:'All' },
   { id:'strategist', label:'Strategist' },
   { id:'giant', label:'Gentle Giant' },
   { id:'manipulator', label:'Manipulator' },
   { id:'everyman', label:'Everyman' }
+];
+
+const LEADERBOARD_DIFFICULTY_FILTERS = [
+  { id:'all', label:'All' },
+  { id:'easy', label:'Easy' },
+  { id:'normal', label:'Normal' },
+  { id:'hard', label:'Hard' },
+  { id:'veryhard', label:'Very Hard' }
 ];
 
 function profileNameById(id){
@@ -1531,6 +1541,8 @@ function openLeaderboard(fromView){
   S.view = 'leaderboard';
   S.leaderboardEntries = null;
   S.leaderboardError = null;
+  S.leaderboardProfileFilter = 'all';
+  S.leaderboardScenarioFilter = 'all';
   fetchLeaderboard();
 }
 
@@ -1540,9 +1552,15 @@ function closeLeaderboard(){
   render();
 }
 
-function setLeaderboardFilter(id){
-  if(S.leaderboardFilter === id) return;
-  S.leaderboardFilter = id;
+function setLeaderboardProfileFilter(id){
+  if(S.leaderboardProfileFilter === id) return;
+  S.leaderboardProfileFilter = id;
+  fetchLeaderboard();
+}
+
+function setLeaderboardScenarioFilter(id){
+  if(S.leaderboardScenarioFilter === id) return;
+  S.leaderboardScenarioFilter = id;
   fetchLeaderboard();
 }
 
@@ -1552,7 +1570,8 @@ async function fetchLeaderboard(){
   render();
   try{
     let url = `${SUPABASE_URL}/rest/v1/${LEADERBOARD_TABLE}?select=*&order=raw_score.desc&limit=50`;
-    if(S.leaderboardFilter !== 'all') url += `&profile=eq.${encodeURIComponent(S.leaderboardFilter)}`;
+    if(S.leaderboardProfileFilter !== 'all') url += `&profile=eq.${encodeURIComponent(S.leaderboardProfileFilter)}`;
+    if(S.leaderboardScenarioFilter !== 'all') url += `&scenario=eq.${encodeURIComponent(S.leaderboardScenarioFilter)}`;
     const res = await fetch(url, {
       headers:{ apikey: SUPABASE_KEY, Authorization: `Bearer ${SUPABASE_KEY}` }
     });
@@ -1596,7 +1615,11 @@ function renderLeaderboardView(){
   <button class="back-btn" onclick="closeLeaderboard()">&larr; Back</button>
   <div class="section-label">Filter by character</div>
   <div class="lb-tabs">
-    ${LEADERBOARD_FILTERS.map(f=>`<button class="ref-tab ${S.leaderboardFilter===f.id?'active':''}" onclick="setLeaderboardFilter('${f.id}')">${f.label}</button>`).join('')}
+    ${LEADERBOARD_PROFILE_FILTERS.map(f=>`<button class="ref-tab ${S.leaderboardProfileFilter===f.id?'active':''}" onclick="setLeaderboardProfileFilter('${f.id}')">${f.label}</button>`).join('')}
+  </div>
+  <div class="section-label">Filter by difficulty</div>
+  <div class="lb-tabs lb-tabs-difficulty">
+    ${LEADERBOARD_DIFFICULTY_FILTERS.map(f=>`<button class="ref-tab ref-tab-difficulty ${S.leaderboardScenarioFilter===f.id?'active':''}" onclick="setLeaderboardScenarioFilter('${f.id}')">${f.label}</button>`).join('')}
   </div>
   ${bodyHtml}
   `;
@@ -2225,7 +2248,8 @@ S.referenceReturnView = null;
 S.leaderboardReturnView = null;
 S.leaderboardEntries = null;
 S.leaderboardError = null;
-S.leaderboardFilter = 'all';
+S.leaderboardProfileFilter = 'all';
+S.leaderboardScenarioFilter = 'all';
 render();
 
 document.addEventListener('visibilitychange', () => {
