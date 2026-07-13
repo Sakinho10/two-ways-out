@@ -460,6 +460,83 @@ too high across the board; this one was about a *trap* that could put the
 floor at zero for an intuitive playstyle. Fixing the trap doesn't fix the
 ceiling.
 
+## v2 follow-up: scenario-throttle Evidence gain (partial — ceiling not closed)
+
+Direct attempt at the *ceiling* finding from "v2 verification" above: Escape
+already throttles its main stat per scenario (`security.escapePlanMult`);
+Evidence had no equivalent, despite being Justice's primary lever now that
+Heat is deliberately mild. Added `scrutiny.evidenceMult` (easy 1.1, normal
+1.0, hard 0.75, veryhard 0.65) and applied it in `applyDelta()`'s
+`d.evidence` branch the same way `escapePlanMult` is applied to
+`d.escapePlan` — scaling positive gains only, never the losses from
+`maybeEvidenceChallenge()` or the Heat tier events. Mirrored into
+`sim/pipeline_sim.js`.
+
+**Result: the fix measurably moves two combos but does not close the gap.**
+400-run Justice win% before -> after:
+
+| Scenario | Profile | Before | After |
+|---|---|---|---|
+| Easy | Strategist | 99.8% | 99.5% |
+| Easy | Gentle Giant | 95.5% | 96.8% |
+| Easy | Manipulator | 100.0% | 100.0% |
+| Easy | Everyman | 98.5% | 99.3% |
+| Normal | Strategist | 100.0% | 100.0% |
+| Normal | Gentle Giant | 99.3% | 98.5% |
+| Normal | Manipulator | 100.0% | 100.0% |
+| Normal | Everyman | 100.0% | 99.8% |
+| Hard | Strategist | 100.0% | 100.0% |
+| Hard | Gentle Giant | 99.0% | 97.8% |
+| Hard | Manipulator | 100.0% | 100.0% |
+| Hard | Everyman | 100.0% | 99.8% |
+| Very Hard | Strategist | 100.0% | 99.5% |
+| Very Hard | Gentle Giant | 96.5% | 87.5% |
+| Very Hard | Manipulator | 100.0% | 99.0% |
+| Very Hard | Everyman | 99.3% | 93.8% |
+
+Easy/Normal barely move, as intended (`evidenceMult` is 1.0 at Normal by
+construction, and only mildly above 1 at Easy). But Hard doesn't move in any
+combo — every profile stays at 97.8-100%. Very Hard moves meaningfully for
+two profiles (Gentle Giant -9pp, Everyman -5.5pp) and barely for the other
+two (Strategist/Manipulator, both still ≥99%). None of this reaches the
+stated goal of pulling Hard/Very Hard out of the 95-100% band across the
+board.
+
+**Root cause, updated:** `escapePlanMult` works on Escape because Escape
+failures compound — `ESCAPE_ESCALATION_PENALTY`, scaled by
+`security.escalationPenaltyMult`, permanently stacks against every future
+attempt, so a slower `escapePlan` growth rate interacts with an escalating
+wall. `computeJusticeChance()` has no equivalent term for
+`justiceAttemptsUsed` — retries cost a few days and a temporary Evidence dip,
+nothing more — and the trial-deadline day budget (168-192 days at Hard/Very
+Hard) is generous relative to the ~18-33 days these runs actually take. A
+25-35% slower Evidence gain rate only delays hitting `computeJusticeChance()`'s
+95% cap by a few days; it doesn't lower the win rate achieved within budget.
+This confirms the fork the original finding already flagged: throttling raw
+Evidence gain and giving Justice attempts their own repeat-escalation
+mechanic (mirroring Escape's) are both needed, not either/or — this PR ships
+only the first half.
+
+**Checks 2 and 3 re-verified, neither regressed:**
+
+- Loud-play Heat trap (`checkLoudJusticeChance()`, 100 runs/combo): range
+  was ~63-95% pre-fix, now **~62-95%** post-fix (worst case still Very
+  Hard/Gentle Giant, 64.3% -> 62.3%). Still comfortably clear of the ~50%
+  floor — slower Evidence growth on Hard/Very Hard does not reopen the trap.
+- Strategist Justice Tier 3 reachability (`checkTier3JusticeReachability()`,
+  150 runs/combo): Strategist was already at 0% (FLAG) for Normal/Hard/Very
+  Hard pre-fix; post-fix it's 0%/2%/3% respectively (Easy went from 1% to
+  0%). All single-digit and within run-to-run noise at N=150 — no
+  qualitative change either direction. Slower Evidence accumulation didn't
+  meaningfully extend how long a Strategist-piloted bot lingers before
+  winning.
+
+Verify with:
+
+```
+node sim/pipeline_sim.js
+```
+
 ## Known Gaps
 
 | Item | Status |
@@ -470,5 +547,5 @@ ceiling.
 | No day/attempt-cost mechanics — Justice was gated by a flat day floor, and neither ending's fail penalty scaled with confidence or repeat attempts | Done — `MIN_JUSTICE_DAY` removed, attempts spend their own day, and fail penalties scale via `underpreparedMult()` plus scaled fail day-costs, described above |
 | No grading/ranking on the ending screen | Done — `computeGrade()` produces a letter grade, raw score, generated comment, and Elite badge, described above |
 | Single Suspicion stat rose regardless of play style and went inert past a flat 3-event pool; move pool felt repetitive across playthroughs | Done (v2) — split into Suspicion (Escape)/Heat (Justice), each footprint-driven and decaying, plus a tier ladder and ~28 new moves across earned-through-play gates — see "Suspicion & Heat" and "Expanded move pool" above |
-| v2: Justice win rate is now inflated (often 95-100%) across most profile x scenario combos, and Strategist rarely lingers long enough to reach Justice Tier 3 content | Open — root-caused in "v2 verification" above (Heat's deliberately mild, Evidence isn't scenario-throttled); needs a dedicated balance follow-up, not bundled into this PR |
+| v2: Justice win rate is now inflated (often 95-100%) across most profile x scenario combos, and Strategist rarely lingers long enough to reach Justice Tier 3 content | Partially addressed (v2 follow-up) — `evidenceMult` scenario throttle added, mirroring `escapePlanMult`, but verified **insufficient alone**: Hard/Very Hard mostly stay in the 95-100% band. Root cause updated — see "v2 follow-up: scenario-throttle Evidence gain" below; still needs a Justice-side repeat-attempt escalation mechanic (the other half of the original root-cause finding) to actually close the gap |
 | v2: loud/naive Justice play (always taking the highest-apparent-Evidence move) could collapse to single-digit win chance by end of game — two systems (top Heat tier + `maybeEvidenceChallenge()`) independently drained Evidence at once, and `controlTheStory` still wrote to the wrong (Escape-track) stat | Done (v2 follow-up) — see "v2 follow-up: loud-play Heat trap" above |
