@@ -805,6 +805,19 @@ pre-fix, is gone; its 4-attempt bucket drops to a single win in 300 runs)
   near-ceiling-confidence quiet build essentially never fails-and-retries
   the way this fix targets.
 
+**Series closed here.** The remaining Strategist/Manipulator spread (89-97%
+on Hard/Very Hard, vs. Gentle Giant's 64-84%) was considered as a further
+target and deliberately left alone: the original finding was *uniform*
+inflation — every profile converging near 99-100% regardless of who was
+played, which is what made the game feel arbitrary. A ~30-point spread
+between profiles, with the two Justice-leaning profiles (`PATH_LEAN`)
+sitting higher than the Escape-leaning one, is profile differentiation
+working as designed, not the inflation bug persisting. A profile- or
+Intellect-scaled escalation term could narrow it further, but would do so
+by suppressing exactly the thing v2's move-pool/profile-chain work set out
+to create — closing this gap further is not planned unless real playtest
+feedback says otherwise.
+
 Verify with:
 
 ```
@@ -821,5 +834,5 @@ node sim/pipeline_sim.js
 | No day/attempt-cost mechanics — Justice was gated by a flat day floor, and neither ending's fail penalty scaled with confidence or repeat attempts | Done — `MIN_JUSTICE_DAY` removed, attempts spend their own day, and fail penalties scale via `underpreparedMult()` plus scaled fail day-costs, described above |
 | No grading/ranking on the ending screen | Done — `computeGrade()` produces a letter grade, raw score, generated comment, and Elite badge, described above |
 | Single Suspicion stat rose regardless of play style and went inert past a flat 3-event pool; move pool felt repetitive across playthroughs | Done (v2) — split into Suspicion (Escape)/Heat (Justice), each footprint-driven and decaying, plus a tier ladder and ~28 new moves across earned-through-play gates — see "Suspicion & Heat" and "Expanded move pool" above |
-| v2: Justice win rate is now inflated (often 95-100%) across most profile x scenario combos, and Strategist rarely lingers long enough to reach Justice Tier 3 content | Still open, partially narrowed (three follow-ups so far) — `evidenceMult`, `justiceChanceCeiling`, and now `JUSTICE_ESCALATION_PENALTY` (see "v2 follow-up: Justice attempt escalation penalty" above) are all shipped. The escalation penalty measurably narrows the gap — Gentle Giant/Everyman drop 7-22pp on Hard/Very Hard, and first-attempt win share rises from ~50% to ~57% on average, confirming less of the win rate now comes from compounding retries — but Strategist/Manipulator still land at 89-97% on Hard/Very Hard, because their fast Evidence-to-chance conversion clears the bar within 1-2 retries regardless of a flat per-attempt penalty. A scenario-scaled `JUSTICE_MAX_ATTEMPTS` was tried as a second lever and reverted: it gave no measurable benefit, because `JUSTICE_BOT_MAX_DAYS` comfortably exceeds `JUSTICE_COOLDOWN_DAYS` several times over, so capping burst attempts doesn't cap lifetime attempts available within the day budget. Closing the remaining Strategist/Manipulator gap likely needs a per-profile or Intellect-scaled escalation term, not a flat one — kept out of scope here |
+| v2: Justice win rate is now inflated (often 95-100%) across most profile x scenario combos, and Strategist rarely lingers long enough to reach Justice Tier 3 content | Resolved (four follow-ups) — `evidenceMult`, `justiceChanceCeiling`, and `JUSTICE_ESCALATION_PENALTY` together replaced uniform 95-100% convergence with real profile spread on Hard/Very Hard (Gentle Giant 64-84%, Everyman 79-93%, Strategist/Manipulator 89-97%). The remaining spread is profile differentiation (Justice-leaning profiles outperforming, by design — see `PATH_LEAN`), not the original inflation bug, and is left as-is; see "v2 follow-up: Justice attempt escalation penalty" above for the reasoning. Strategist Tier 3 reachability stayed within pre-existing single-digit noise across every follow-up in this series — never a regression, never resolved, effectively a non-issue at this point |
 | v2: loud/naive Justice play (always taking the highest-apparent-Evidence move) could collapse to single-digit win chance by end of game — two systems (top Heat tier + `maybeEvidenceChallenge()`) independently drained Evidence at once, and `controlTheStory` still wrote to the wrong (Escape-track) stat | Done (v2 follow-up) — see "v2 follow-up: loud-play Heat trap" above |
