@@ -378,6 +378,12 @@ const S = {
   evidence: 5,
   escapePlan: 5,
   suspicion: 10,
+  heat: 10,
+  trust: 10,
+  recentActions: [],
+  firedPatterns: {},
+  lastFamilyVisitDay: 0,
+  repetitionReliefUntilDay: 0,
   log: "You wake up on the concrete shelf they call a bunk. Four hundred and some days since they brought you in for a robbery you didn't commit. Nobody's listening yet. Today, you decide what kind of man gets you out.",
   over: false,
   ending: null,
@@ -399,7 +405,7 @@ const S = {
   shareError: null
 };
 
-const SAVE_KEY = 'twoWaysOutSave-v4';
+const SAVE_KEY = 'twoWaysOutSave-v5';
 
 function saveState(){
   try{ localStorage.setItem(SAVE_KEY, JSON.stringify(S)); }catch(e){ /* storage unavailable, ignore */ }
@@ -439,7 +445,7 @@ function escapeHtml(str){
 }
 
 // track previous stat values to animate the ones that changed on next render
-let prevStats = { connections:S.connections, evidence:S.evidence, escapePlan:S.escapePlan, suspicion:S.suspicion };
+let prevStats = { connections:S.connections, evidence:S.evidence, escapePlan:S.escapePlan, suspicion:S.suspicion, heat:S.heat, trust:S.trust };
 
 function clamp(v){ return Math.max(0, Math.min(100, v)); }
 
@@ -585,6 +591,7 @@ function applyDelta(d){
   if(d.media) S.media = clamp(S.media + d.media);
   if(d.connections) S.connections = clamp(S.connections + d.connections);
   if(d.evidence) S.evidence = clamp(S.evidence + d.evidence);
+  if(d.trust) S.trust = clamp(S.trust + d.trust);
   if(d.escapePlan){
     let p = d.escapePlan;
     // security scenario knob: throttles Escape Plan growth specifically
@@ -594,7 +601,7 @@ function applyDelta(d){
   if(d.suspicion){
     let s = d.suspicion;
     // composure and the scenario's security level only soften INCREASES in
-    // suspicion, never the relief from resting
+    // suspicion, never the relief from resting/decay
     if(s > 0){
       if(S.profile) s *= composureFactor(S.profile.stats.composure);
       if(S.scenario) s *= S.scenario.security.suspicionMult;
@@ -602,8 +609,256 @@ function applyDelta(d){
     }
     S.suspicion = clamp(S.suspicion + s);
   }
+  if(d.heat){
+    // Heat is the Justice-track mirror of Suspicion, but deliberately
+    // independent of the composure/security modifiers above — see
+    // "Part 2 — Heat" in README, Heat is meant to be friction on the
+    // Justice path specifically, not another lens on the same Escape-side knobs.
+    S.heat = clamp(S.heat + Math.round(d.heat));
+  }
   checkMilestones();
   checkMoveUnlocks();
+}
+
+// ---------------------------------------------------------------------
+// Suspicion (Escape-track) / Heat (Justice-track) — v2 rework.
+//
+// Each is driven ONLY by a per-action footprint on the days that specific
+// track's actions are taken, not an ambient "+2/day regardless" tax. Any
+// day where the player does NOT take an action on that track (including
+// Rest, and including taking an action on the OTHER track) decays it
+// instead. This is what makes quiet/patient play actually read as quiet —
+// under the old flat +2/day, staying cautious never stopped the number
+// from climbing; now it only rises when the player takes the risk.
+// ---------------------------------------------------------------------
+
+const FOOTPRINT_SUSPICION = {
+  scout:2, mapRoutines:2, cultivateRoutine:3, crew:4, leanOnInmate:5,
+  forgeRapport:5, testBlindSpot:6, stashTools:7, bribe:7, disguiseWork:8,
+  breachTest:10
+};
+const SUSPICION_DECAY = -3;
+
+const FOOTPRINT_HEAT = {
+  pressStatement:6, pushBackOnDepartment:7, steerCoverage:8, publicRally:8,
+  whistleblowerLeak:9
+};
+const HEAT_DECAY = -2;
+
+// trialProximityMult: the closer the current trial cycle is to running out,
+// the more any given move stands out — same footprint, higher cost late.
+function trialProximityMult(){
+  if(!S.scenario || !S.trialDeadline) return 1;
+  const frac = Math.max(0, S.trialDeadline - S.day) / S.trialDeadline;
+  if(frac > 0.5) return 1.0;
+  if(frac > 0.25) return 1.25;
+  if(frac > 0.10) return 1.5;
+  return 1.8;
+}
+
+// Reuses S.actionStreak (the same back-to-back-repeat counter that already
+// drives the reward-decay `mult` in chooseAction) but in the OPPOSITE
+// direction: repeating the same move doesn't just get less profitable, it
+// gets more noticeable. Distinct formula from the reward-decay mult, so
+// both are computed independently off the same streak counter.
+function repetitionMult(){
+  return Math.min(1.6, 1 + 0.15*(S.actionStreak-1));
+}
+
+// Tier-gated confirmation bias: once Suspicion has already crossed 70
+// through the player's own actions, further Escape-track footprint lands
+// slightly harder — guards who already suspect you read more into what
+// you do next. A player who stays under 70 never triggers this.
+function suspicionBiasMult(){ return S.suspicion >= 70 ? 1.15 : 1; }
+
+function footprintFor(table, id, base){
+  let v = base;
+  // Manipulator's tradeFavor discounts bribe's own footprint by ~1, once earned.
+  if(id === 'bribe' && (S.actionCounts.tradeFavor||0) > 0) v = Math.max(1, v - 1);
+  return v;
+}
+
+// Called once per day, after the day's action has already run and applied
+// its own (non-suspicion/non-heat) effects. Computes and applies the
+// footprint/decay for BOTH tracks, and returns log text describing what
+// happened so callers can append it to the day's narrative.
+function applyDailySuspicionAndHeat(actionId){
+  let text = '';
+
+  const susBase = FOOTPRINT_SUSPICION[actionId];
+  if(susBase != null){
+    const footprint = footprintFor(FOOTPRINT_SUSPICION, actionId, susBase);
+    let delta = footprint * trialProximityMult() * repetitionMult() * suspicionBiasMult();
+    delta = Math.round(delta);
+    applyDelta({suspicion: delta});
+    text += ` (+${delta} Suspicion)`;
+  } else {
+    const before = S.suspicion;
+    applyDelta({suspicion: SUSPICION_DECAY});
+    const actual = before - S.suspicion;
+    if(actual > 0) text += ` (-${actual} Suspicion)`;
+  }
+
+  const heatBase = FOOTPRINT_HEAT[actionId];
+  if(heatBase != null){
+    let delta = heatBase * trialProximityMult() * repetitionMult();
+    delta = Math.round(delta);
+    applyDelta({heat: delta});
+    text += ` (+${delta} Heat)`;
+  } else {
+    const before = S.heat;
+    applyDelta({heat: HEAT_DECAY});
+    const actual = before - S.heat;
+    if(actual > 0) text += ` (-${actual} Heat)`;
+  }
+
+  recordRecentAction(actionId);
+  text += checkPatterns();
+  return text;
+}
+
+// ---------------------------------------------------------------------
+// Pattern detection — a small combo table, not a subsystem. A defined set
+// of Escape-track actions all landing within a rolling window of days
+// reads as a plan taking shape even if each action individually stayed
+// under a tier threshold, so it gets its own flat spike + distinct text.
+// ---------------------------------------------------------------------
+const PATTERNS = [
+  {
+    actions:['scout','bribe','leanOnInmate'], withinDays:4, bonus:12, label:'Preparing a Breakout',
+    text:"PATTERN NOTICED — Scouting the rotation, moving cash through a bribe, and leaning on another inmate for muscle, all inside the same few days. That's not routine yard behavior. Someone puts the pieces together."
+  },
+  {
+    actions:['stashTools','disguiseWork'], withinDays:5, bonus:14, label:'Dry Run Spotted',
+    text:"PATTERN NOTICED — Tools going missing from the shop, a work-detail uniform that doesn't quite fit right, both inside the same week. Nobody has proof. Everybody's watching closer now."
+  }
+];
+
+function recordRecentAction(id){
+  S.recentActions.push({day:S.day, id});
+  const cutoff = S.day - 10;
+  S.recentActions = S.recentActions.filter(e => e.day > cutoff);
+}
+
+function checkPatterns(){
+  let text = '';
+  for(const p of PATTERNS){
+    if(S.firedPatterns[p.label]) continue; // one-time, mirrors the pipeline-milestone pattern
+    const windowStart = S.day - p.withinDays + 1;
+    const seen = new Set(S.recentActions.filter(e => e.day >= windowStart).map(e => e.id));
+    if(p.actions.every(a => seen.has(a))){
+      S.firedPatterns[p.label] = true;
+      applyDelta({suspicion: p.bonus});
+      text += `\n\n${p.text} (+${p.bonus} Suspicion)`;
+    }
+  }
+  return text;
+}
+
+// ---------------------------------------------------------------------
+// Tier ladders — replace the old flat 3-event suspicion pool. Each tier's
+// event pool is rolled independently for Suspicion and Heat once per day;
+// the top tier on each track gets a much higher chance specifically when
+// today's action was on that track (a near-guaranteed severe event "on
+// the next Escape/Heat-track action" once you're basically caught).
+// ---------------------------------------------------------------------
+const SUSPICION_TIERS = [
+  { min:0,  max:19, label:'Unnoticed' },
+  { min:20, max:39, label:'On the radar', chance:0.12,
+    events:[ (mult)=>{
+      applyDelta({escapePlan:-Math.round(3*mult)});
+      return `\n\nA guard does a light pat-down on your way back from the yard. Finds nothing. Still logs it. (-${Math.round(3*mult)} Escape Plan)`;
+    }]},
+  { min:40, max:59, label:'Watched', chance:0.18,
+    events:[ (mult)=>{
+      applyDelta({escapePlan:-Math.round(6*mult)});
+      return `\n\nSearches are more frequent now — your bunk's third one this week. This time they take longer, and a piece of your plan doesn't survive it. (-${Math.round(6*mult)} Escape Plan)`;
+    }, (mult)=>{
+      applyDelta({suspicion:4});
+      return `\n\nA guard captain flags your name in the shift briefing — nothing official yet, just a name to remember. (+4 Suspicion)`;
+    }]},
+  { min:60, max:79, label:'Flagged', chance:0.24,
+    events:[ (mult)=>{
+      applyDelta({escapePlan:-Math.round(10*mult), connections:-Math.round(4*mult)});
+      return `\n\nBODY SEARCH — Pulled aside on the way to chow, patted down properly this time. They don't find contraband, but two of your contacts see it happen and go quiet on you. (-${Math.round(10*mult)} Escape Plan, -${Math.round(4*mult)} Connections)`;
+    }, (mult)=>{
+      const days = rand(2,4);
+      S.day += days;
+      applyDelta({suspicion:6});
+      return `\n\nSANCTION — A contraband sweep names you as a person of interest. A few days lost to lockdown. (+${days} days, +6 Suspicion)`;
+    }]},
+  { min:80, max:94, label:'Under surveillance', chance:0.32,
+    events:[ (mult)=>{
+      const days = rand(4,8);
+      S.day += days;
+      applyDelta({escapePlan:-Math.round(16*mult)});
+      return `\n\nSANCTION — Someone upstairs decided you need "closer watching" for a while. A real chunk of your plan doesn't survive the lockdown. (+${days} days, -${Math.round(16*mult)} Escape Plan)`;
+    }, (mult)=>{
+      applyDelta({escapePlan:-Math.round(12*mult)});
+      return `\n\nEvery camera on this block seems to find you at once. Whatever you were building just got a lot harder to finish quietly. (-${Math.round(12*mult)} Escape Plan)`;
+    }]},
+  { min:95, max:100, label:'About to be caught', chance:0.55, escapeTrackChance:0.9,
+    events:[ (mult)=>{
+      const days = rand(6,12);
+      S.day += days;
+      applyDelta({escapePlan:-Math.round(25*mult), connections:-Math.round(10*mult)});
+      return `\n\nTHEY'RE ON TO YOU — A guard captain who's had enough pulls your whole cell apart, personally. Whatever you had going is in pieces now. (+${days} days, -${Math.round(25*mult)} Escape Plan, -${Math.round(10*mult)} Connections)`;
+    }]}
+];
+
+const HEAT_TIERS = [
+  { min:0,  max:19, label:'Below the radar' },
+  { min:20, max:39, label:'Noted', chance:0.12,
+    events:[ ()=>{
+      applyDelta({family:-2});
+      return `\n\nAn unfavorable mention runs in a local roundup piece — nothing damning, just enough to make a family visit a little tenser than it needed to be. (-2 Family)`;
+    }]},
+  { min:40, max:59, label:'Watched by the department', chance:0.18,
+    events:[ ()=>{
+      applyDelta({evidence:-rand(4,8)});
+      return `\n\nLEGAL STONEWALLING — A records request "can't be located" this month. Your lawyer files it again. (-Evidence)`;
+    }]},
+  { min:60, max:79, label:'Politically inconvenient', chance:0.24,
+    events:[ ()=>{
+      applyDelta({evidence:-rand(6,12)});
+      return `\n\nA witness who agreed to talk suddenly isn't returning calls. Nobody says why out loud. (-Evidence)`;
+    }, ()=>{
+      applyDelta({lawyer:-5});
+      return `\n\nYour lawyer gets a call reminding him whose toes this case is stepping on. He's still on it — just slower now. (-5 Lawyer)`;
+    }]},
+  { min:80, max:94, label:'A liability', chance:0.32,
+    events:[ ()=>{
+      applyDelta({lawyer:-8});
+      return `\n\nYour lawyer's firm starts asking whether this case is worth the exposure. His motivation to push hard is not what it was. (-8 Lawyer)`;
+    }, ()=>{
+      applyDelta({media:-6});
+      return `\n\nThe coverage swings hostile — a competing outlet runs a piece painting the whole case as a distraction from real victims. (-6 Media)`;
+    }]},
+  { min:95, max:100, label:'Story has turned', chance:0.55, escapeTrackChance:0.9,
+    events:[ ()=>{
+      applyDelta({evidence:-rand(14,22)});
+      return `\n\nA key witness recants, on the record, citing "pressure from all sides." Your case just lost ground it may not get back. (-Evidence)`;
+    }]}
+];
+
+function tierFor(value, tiers){
+  return tiers.find(t => value >= t.min && value <= t.max) || tiers[0];
+}
+
+function maybeTierEvent(track, actionId){
+  const tiers = track === 'suspicion' ? SUSPICION_TIERS : HEAT_TIERS;
+  const value = track === 'suspicion' ? S.suspicion : S.heat;
+  const tier = tierFor(value, tiers);
+  if(!tier.events || tier.events.length === 0) return '';
+  const footprintTable = track === 'suspicion' ? FOOTPRINT_SUSPICION : FOOTPRINT_HEAT;
+  const onTrackToday = footprintTable[actionId] != null;
+  let chance = tier.chance || 0;
+  if(onTrackToday && tier.escapeTrackChance != null) chance = tier.escapeTrackChance;
+  if(Math.random() >= chance) return '';
+  // Events already scale their own severity by tier; the mult argument
+  // mirrors the shape of underpreparedMult() (1x baseline) for a future
+  // tier-depth scalar without requiring a signature change.
+  return pick(tier.events)(1);
 }
 
 function rand(a,b){ return Math.floor(Math.random()*(b-a+1))+a; }
@@ -696,45 +951,43 @@ const ACTIONS = [
   },
   {
     id:'crew', label:'Trade favors with the cellblock crew', side:'esc',
-    desc:'+Connections, +Escape Plan · +Suspicion, weaker if repeated',
+    desc:'+Connections, +Escape Plan · footprint 4, weaker if repeated',
     run(mult=1){
       const chaFactor = statFactor(S.profile.stats.charisma);
-      const c = Math.round(rand(5,9)*mult*chaFactor), p = Math.round(rand(3,6)*mult*chaFactor), s = rand(4,8);
-      applyDelta({connections:c, escapePlan:p, suspicion:s});
-      return `You sit at the crew's table at lunch. In exchange for watching a corridor during their business, they slip you a filed-down key blank and a hand-drawn map of the pipe tunnels. (+${c} Connections, +${p} Escape Plan, +${s} Suspicion)`;
+      const c = Math.round(rand(5,9)*mult*chaFactor), p = Math.round(rand(3,6)*mult*chaFactor);
+      applyDelta({connections:c, escapePlan:p});
+      return `You sit at the crew's table at lunch. In exchange for watching a corridor during their business, they slip you a filed-down key blank and a hand-drawn map of the pipe tunnels. (+${c} Connections, +${p} Escape Plan)`;
     }
   },
   {
     id:'scout', label:'Scout the guard rotations', side:'esc',
-    desc:'+Escape Plan · small +Suspicion, weaker if repeated',
+    desc:'+Escape Plan · footprint 2, weaker if repeated',
     run(mult=1){
       const intFactor = statFactor(S.profile.stats.intellect);
-      const p = Math.round(rand(5,9)*mult*intFactor), s = rand(1,4);
-      applyDelta({escapePlan:p, suspicion:s});
-      return `From the yard, you time the changeovers, count footsteps, memorize which camera has been "broken" for months. Patience, of a different kind. (+${p} Escape Plan, +${s} Suspicion)`;
+      const p = Math.round(rand(5,9)*mult*intFactor);
+      applyDelta({escapePlan:p});
+      return `From the yard, you time the changeovers, count footsteps, memorize which camera has been "broken" for months. Patience, of a different kind. (+${p} Escape Plan)`;
     }
   },
   {
     id:'bribe', label:'Bribe a guard for tools', side:'esc',
-    desc:'Costs Connections, big +Escape Plan, big +Suspicion',
+    desc:'Costs Connections, big +Escape Plan · footprint 7 · unlocked once your prison network has real substance',
     run(mult=1){
       const phyFactor = statFactor(S.profile.stats.physique);
       if(S.connections < 12){
         applyDelta({suspicion:6});
         return `You don't have enough on the inside to make this offer credible. The guard reports the approach. Eyes are on you now. (+6 Suspicion, nothing gained)`;
       }
-      const p = Math.round(rand(10,16)*mult*phyFactor), s = rand(8,14);
-      applyDelta({connections:-12, escapePlan:p, suspicion:s});
-      return `Cash your sister smuggled in on a visit buys you a hacksaw blade and thirty unwatched seconds by the east gate. Expensive. Loud, if anyone's counting. (+${p} Escape Plan, -12 Connections, +${s} Suspicion)`;
+      const p = Math.round(rand(10,16)*mult*phyFactor);
+      applyDelta({connections:-12, escapePlan:p});
+      return `Cash your sister smuggled in on a visit buys you a hacksaw blade and thirty unwatched seconds by the east gate. Expensive. Loud, if anyone's counting. (+${p} Escape Plan, -12 Connections)`;
     }
   },
   {
     id:'rest', label:'Keep your head down', side:'neutral',
-    desc:'-Suspicion · no progress',
+    desc:'Lets Suspicion and Heat decay · no progress',
     run(mult=1){
-      const s = rand(4,9);
-      applyDelta({suspicion:-s});
-      return `You do nothing worth noticing. Some days that's the smartest move in the building. (-${s} Suspicion)`;
+      return `You do nothing worth noticing. Some days that's the smartest move in the building.`;
     }
   },
 
@@ -755,19 +1008,18 @@ const ACTIONS = [
   },
   {
     id:'pressStatement', label:'Give a statement to the press', side:'just',
-    desc:'+Evidence, +Media · big +Suspicion, going public draws real heat',
+    desc:'+Evidence, +Media · footprint 6 Heat, going public draws real attention',
     run(mult=1){
       const chaFactor = statFactor(S.profile.stats.charisma);
       const e = Math.round(rand(9,15)*mult*chaFactor);
       const med = Math.round(rand(3,5)*mult*chaFactor);
-      const s = rand(6,10);
-      applyDelta({evidence:e, media:med, suspicion:s});
-      return `You agree to go on the record — your name, your face, your version of events, printed where the DA's office can't pretend not to see it. The story runs. So does the attention it buys you inside. (+${e} Evidence, +${med} Media, +${s} Suspicion)`;
+      applyDelta({evidence:e, media:med});
+      return `You agree to go on the record — your name, your face, your version of events, printed where the DA's office can't pretend not to see it. The story runs. So does the attention it buys you inside. (+${e} Evidence, +${med} Media)`;
     }
   },
   {
     id:'testBlindSpot', label:'Test the blind spot you found', side:'esc',
-    desc:'Big +Escape Plan on a good night · backfires into +Suspicion on a bad one',
+    desc:'Big +Escape Plan on a good night · footprint 6, chance of a wasted night',
     run(mult=1){
       const phyFactor = statFactor(S.profile.stats.physique);
       if(Math.random() < 0.7){
@@ -775,9 +1027,7 @@ const ACTIONS = [
         applyDelta({escapePlan:p});
         return `You slip into the gap in the rotation you've been watching for weeks and time it for real, start to finish, no interruptions. It holds up exactly the way you mapped it. (+${p} Escape Plan)`;
       }
-      const s = rand(10,16);
-      applyDelta({suspicion:s});
-      return `You slip into the gap — and a shift change runs early tonight, nobody told you. You're back in your bunk before anyone clocks you missing, but a guard notices you somewhere you shouldn't be and starts asking why. (+${s} Suspicion, nothing gained)`;
+      return `You slip into the gap — and a shift change runs early tonight, nobody told you. You're back in your bunk before anyone clocks you missing, and a guard notices you somewhere you shouldn't be and starts asking why. (nothing gained)`;
     }
   },
 
@@ -897,26 +1147,436 @@ const ACTIONS = [
       applyDelta({evidence:e, media:med, suspicion:s});
       return `You get a detail to a sympathetic reporter before the DA's office can spin it first — something specific enough to be credible, small enough not to blow back on your lawyer. It works. It also means the whole country's coverage of you shifts, if only for a day, and every guard on this block clocks it. (+${e} Evidence, +${med} Media, +${s} Suspicion)`;
     }
+  },
+
+  // ------------------------------------------------------------------
+  // v2: expanded move pool — Tier 1 (day >= 3, or a light earned condition)
+  // ------------------------------------------------------------------
+  {
+    id:'studyCaseFile', label:'Study your own case file cover to cover', side:'just',
+    desc:'+Evidence · a slow first read, but you start seeing what your lawyer missed',
+    run(mult=1){
+      const intFactor = statFactor(S.profile.stats.intellect);
+      const e = Math.round(rand(5,9)*mult*intFactor);
+      applyDelta({evidence:e});
+      return `You read your own file front to back for the first time — really read it, past the parts that made you angry the first three tries. A timestamp doesn't add up. (+${e} Evidence)`;
+    }
+  },
+  {
+    id:'mapRoutines', label:"Map the block's daily routines", side:'esc',
+    desc:'+Escape Plan · footprint 2, the groundwork under every later move',
+    run(mult=1){
+      const intFactor = statFactor(S.profile.stats.intellect);
+      const p = Math.round(rand(4,7)*mult*intFactor);
+      applyDelta({escapePlan:p});
+      return `You start keeping track of more than just the guards — meal counts, laundry pickup, the exact minute the lights dim. A building runs on habits, and habits are predictable. (+${p} Escape Plan)`;
+    }
+  },
+  {
+    id:'gymTime', label:'Put in the hours in the yard', side:'neutral',
+    desc:'+Trust · keeps you sharp and keeps people from asking questions',
+    run(mult=1){
+      const phyFactor = statFactor(S.profile.stats.physique);
+      const t = Math.round(rand(2,5)*mult*phyFactor);
+      applyDelta({trust:t});
+      return `You put the hour in with everyone else, no more and no less. Nobody remembers a man who just works out. (+${t} Trust)`;
+    }
+  },
+  {
+    id:'infirmaryHelp', label:'Help out around the infirmary', side:'neutral',
+    desc:'+Trust, small +Family · quiet, decent work',
+    run(mult=1){
+      const t = Math.round(rand(3,6)*mult);
+      const fam = Math.round(rand(1,3)*mult);
+      applyDelta({trust:t, family:fam});
+      return `You spend the afternoon fetching water and holding a sick man's arm steady for a nurse who's run off her feet. It doesn't fix anything. It's still the right thing to do, and people notice who does it anyway. (+${t} Trust, +${fam} Family)`;
+    }
+  },
+  {
+    id:'cultivateRoutine', label:'Cultivate a routine nobody questions', side:'esc',
+    desc:'+Escape Plan · footprint 3, built on what scouting already taught you',
+    run(mult=1){
+      const intFactor = statFactor(S.profile.stats.intellect);
+      const p = Math.round(rand(6,10)*mult*intFactor);
+      applyDelta({escapePlan:p});
+      return `You start showing up in the same places at the same times, on purpose, until nobody clocks it as unusual anymore — just part of the schedule now, same as you. (+${p} Escape Plan)`;
+    }
+  },
+  {
+    id:'therapySession', label:'Sit in on the voluntary counseling group', side:'neutral',
+    desc:'Extra Suspicion/Heat decay that day · low-key, easy to overlook',
+    run(mult=1){
+      applyDelta({suspicion:-2, heat:-1});
+      return `You sit in a circle of folding chairs for an hour and say almost nothing. It's not much. It's still an hour where nobody's watching you build anything.`;
+    }
+  },
+
+  // ------------------------------------------------------------------
+  // v2: expanded move pool — Tier 2 (mid stat thresholds)
+  // ------------------------------------------------------------------
+  {
+    id:'pushBackOnDepartment', label:'Formally push back on the department', side:'just',
+    desc:'+Evidence · footprint 7 Heat, your lawyer finally has enough standing to file it',
+    run(mult=1){
+      const intFactor = statFactor(S.profile.stats.intellect);
+      const e = Math.round(rand(8,13)*mult*intFactor);
+      applyDelta({evidence:e});
+      return `Your lawyer files a formal complaint against the department's handling of your case — not a lawsuit yet, just enough paper to make someone read it twice. (+${e} Evidence)`;
+    }
+  },
+  {
+    id:'forgeRapport', label:'Forge real rapport, not just favors', side:'esc',
+    desc:'+Connections · footprint 5, the difference between owing you and trusting you',
+    run(mult=1){
+      const chaFactor = statFactor(S.profile.stats.charisma);
+      const c = Math.round(rand(6,10)*mult*chaFactor);
+      applyDelta({connections:c});
+      return `You stop trading favors long enough to actually talk to people — who they were before this, who's waiting for them outside. It sticks better than a transaction does. (+${c} Connections)`;
+    }
+  },
+  {
+    id:'mentorInmate', label:'Mentor a younger inmate through his own case', side:'just',
+    desc:'+Trust, small +Evidence · teaching the law sharpens how you use it',
+    run(mult=1){
+      const intFactor = statFactor(S.profile.stats.intellect);
+      const t = Math.round(rand(3,6)*mult);
+      const e = Math.round(rand(3,6)*mult*intFactor);
+      applyDelta({trust:t, evidence:e});
+      return `You walk a scared kid through his own paperwork, the way you wish someone had walked you through yours. Explaining it out loud clarifies a few things about your own case too. (+${t} Trust, +${e} Evidence)`;
+    }
+  },
+  {
+    id:'quietWorkDetail', label:'Take the quiet work detail nobody wants', side:'neutral',
+    desc:'+Trust · steady, unremarkable, exactly the point',
+    run(mult=1){
+      const t = Math.round(rand(4,7)*mult);
+      applyDelta({trust:t});
+      return `You take the detail nobody fights you for — mopping, hauling, the parts of the day nobody watches closely. Reliability reads different than ambition does in here. (+${t} Trust)`;
+    }
+  },
+
+  // ------------------------------------------------------------------
+  // v2: expanded move pool — Tier 3 (earned through play, scaled gates)
+  // ------------------------------------------------------------------
+  {
+    id:'stashTools', label:'Stash tools somewhere only you know', side:'esc',
+    desc:'Big +Escape Plan · footprint 7, real material committed to a real plan',
+    run(mult=1){
+      const phyFactor = statFactor(S.profile.stats.physique);
+      const p = Math.round(rand(9,14)*mult*phyFactor);
+      applyDelta({escapePlan:p});
+      return `Piece by piece, you move what you've gathered into a gap behind a loose vent cover nobody else has found. It's real now — not a plan on paper, but material sitting somewhere that could get you killed if it's found. (+${p} Escape Plan)`;
+    }
+  },
+  {
+    id:'disguiseWork', label:'Piece together a work-detail disguise', side:'esc',
+    desc:'Big +Escape Plan · footprint 8, chained off what stashing already built',
+    run(mult=1){
+      const intFactor = statFactor(S.profile.stats.intellect);
+      const p = Math.round(rand(10,15)*mult*intFactor);
+      applyDelta({escapePlan:p});
+      return `A uniform that almost fits, a clipboard, the right posture — enough to buy thirty seconds of nobody looking twice, if you use it right. (+${p} Escape Plan)`;
+    }
+  },
+  {
+    id:'blackmailLite', label:'Use what you know as leverage', side:'esc',
+    desc:'+Connections, chance of +Evidence · works better when nobody trusts you enough to expect otherwise',
+    run(mult=1){
+      const chaFactor = statFactor(S.profile.stats.charisma);
+      const c = Math.round(rand(7,12)*mult*chaFactor);
+      applyDelta({connections:c});
+      let text = `You remind someone, quietly, that you know something they'd rather stay buried. It works. It always works, with you — that's sort of the problem. (+${c} Connections)`;
+      if(Math.random() < 0.35){
+        const e = Math.round(rand(3,7)*mult*chaFactor);
+        applyDelta({evidence:e});
+        text += `\n\nWhat you extract this time is actually useful outside these walls too. (+${e} Evidence)`;
+      }
+      return text;
+    }
+  },
+  {
+    id:'steerCoverage', label:'Steer the coverage before someone else does', side:'just',
+    desc:'Big +Evidence, +Media · footprint 8 Heat, taking real control of your own story',
+    run(mult=1){
+      const chaFactor = statFactor(S.profile.stats.charisma);
+      const e = Math.round(rand(9,14)*mult*chaFactor);
+      const med = Math.round(rand(4,7)*mult*chaFactor);
+      applyDelta({evidence:e, media:med});
+      return `You stop reacting to whatever gets printed about you and start feeding a reporter you actually trust the story on your terms, in your words, before anyone else's version sets first. (+${e} Evidence, +${med} Media)`;
+    }
+  },
+  {
+    id:'publicRally', label:'Let a public rally happen in your name', side:'just',
+    desc:"+Family, +Media · footprint 8 Heat, real people showing up for a case that's real to them now",
+    run(mult=1){
+      const chaFactor = statFactor(S.profile.stats.charisma);
+      const fam = Math.round(rand(4,8)*mult*chaFactor);
+      const med = Math.round(rand(5,9)*mult*chaFactor);
+      applyDelta({family:fam, media:med});
+      return `A few dozen strangers stand outside the courthouse with your name on a sign, organized by people you've never met who read about your case somewhere. It's not something you can call off now, and it's not something you can fully control either. (+${fam} Family, +${med} Media)`;
+    }
+  },
+  {
+    id:'whistleblowerLeak', label:'Meet the source who wants to leak the internal file', side:'just',
+    desc:'Very big +Evidence · footprint 9 Heat, someone inside is finally willing to talk',
+    run(mult=1){
+      const intFactor = statFactor(S.profile.stats.intellect);
+      const e = Math.round(rand(14,22)*mult*intFactor);
+      applyDelta({evidence:e});
+      return `Someone who was in the room hands your lawyer a copy of a file that was never supposed to leave the building. It doesn't just help your case — it embarrasses the people who built it. (+${e} Evidence)`;
+    }
+  },
+
+  // ------------------------------------------------------------------
+  // v2: expanded move pool — Tier 4 (late-game, high commitment)
+  // ------------------------------------------------------------------
+  {
+    id:'breachTest', label:'Run a full breach test, start to finish', side:'esc',
+    desc:'Very big +Escape Plan on a good run · footprint 10, the closest thing to a dry run of the real thing',
+    run(mult=1){
+      const phyFactor = statFactor(S.profile.stats.physique);
+      if(Math.random() < 0.75){
+        const p = Math.round(rand(14,20)*mult*phyFactor);
+        applyDelta({escapePlan:p});
+        return `You run the whole route, start to finish, exactly like it's the real night — every gap, every timing window, every fallback. It holds up. (+${p} Escape Plan)`;
+      }
+      const loss = Math.round(6*mult);
+      applyDelta({escapePlan:-loss});
+      return `You run the whole route and something's off — a window that doesn't sit right, a footstep pattern that's changed since you last checked. Better to find that out now than the night it counts. (-${loss} Escape Plan, lesson learned)`;
+    }
+  },
+  {
+    id:'familyVisitDay', label:'A scheduled family visit', side:'neutral',
+    desc:'Big +Family · a rare, real day with people who still believe you',
+    run(mult=1){
+      const fam = rand(8,14);
+      applyDelta({family:fam});
+      return `Your family makes the drive out, the whole trip for one hour behind glass. It's not much time. It's never enough time. It's still the best day you've had in weeks. (+${fam} Family)`;
+    }
+  },
+
+  // ------------------------------------------------------------------
+  // v2: expanded profile-signature chains (2-3 per profile, own gates).
+  // crossReferenceFiles/leanOnInmate/playGuardsAgainstEachOther/
+  // keepEveryoneTalking above are the ORIGINAL one-per-profile signature
+  // moves; they're kept (ids unchanged) but re-gated below rather than
+  // deleted, since they're still live content, just no longer automatic.
+  // ------------------------------------------------------------------
+  {
+    id:'scheduleAhead', label:'Schedule your week three moves ahead', side:'just',
+    desc:'+Evidence · a Strategist plans before he acts',
+    run(mult=1){
+      const intFactor = statFactor(S.profile.stats.intellect);
+      const e = Math.round(rand(5,8)*mult*intFactor);
+      applyDelta({evidence:e});
+      return `You map out exactly which motion follows which filing, weeks before your lawyer even asks. It's the kind of preparation that makes lawyers actually return your calls. (+${e} Evidence)`;
+    }
+  },
+  {
+    id:'contingencyPlan', label:'Build a contingency for every version of denial', side:'just',
+    desc:'+Evidence, +Lawyer · you already know what the board will say before they say it',
+    run(mult=1){
+      const intFactor = statFactor(S.profile.stats.intellect);
+      const e = Math.round(rand(7,11)*mult*intFactor);
+      const law = Math.round(rand(2,4)*mult*intFactor);
+      applyDelta({evidence:e, lawyer:law});
+      return `You draft the rebuttal to a denial you haven't received yet, for every reason they might give. Your lawyer's never had a client hand him the counterargument before he needed it. (+${e} Evidence, +${law} Lawyer)`;
+    }
+  },
+  {
+    id:'standOver', label:'Stand where people can see you', side:'esc',
+    desc:"+Connections · presence does work words would have to fight for",
+    run(mult=1){
+      const phyFactor = statFactor(S.profile.stats.physique);
+      const c = Math.round(rand(5,8)*mult*phyFactor);
+      applyDelta({connections:c});
+      return `You don't threaten anybody. You don't have to — you just stand where the wrong people can see you, and word about who not to bother travels on its own. (+${c} Connections)`;
+    }
+  },
+  {
+    id:'protectWeaker', label:"Protect someone smaller who can't protect himself", side:'esc',
+    desc:'+Trust, small chance of +Escape Plan · size means something when you use it this way',
+    run(mult=1){
+      const phyFactor = statFactor(S.profile.stats.physique);
+      const t = Math.round(rand(5,9)*mult*phyFactor);
+      applyDelta({trust:t});
+      let text = `You step between a kid half your size and the men who were about to make an example of him. Nobody tests it twice. (+${t} Trust)`;
+      if(Math.random() < 0.3){
+        const p = Math.round(rand(3,6)*mult*phyFactor);
+        applyDelta({escapePlan:p});
+        text += `\n\nHe's grateful enough to mention something he probably shouldn't. (+${p} Escape Plan)`;
+      }
+      return text;
+    }
+  },
+  {
+    id:'laborCrew', label:"Run the labor crew like it's yours to run", side:'neutral',
+    desc:'+Trust · size and steadiness both read as leadership out here',
+    run(mult=1){
+      const phyFactor = statFactor(S.profile.stats.physique);
+      const t = Math.round(rand(6,10)*mult*phyFactor);
+      applyDelta({trust:t});
+      return `Nobody assigned you to run the detail. You do anyway, and it goes smoother than it has in months. Guards notice. So does everyone else on it. (+${t} Trust)`;
+    }
+  },
+  {
+    id:'spreadRumor', label:'Spread a rumor and watch where it lands', side:'just',
+    desc:'Small +Evidence, chance of +Media · you rarely need to lie, just aim the truth',
+    run(mult=1){
+      const chaFactor = statFactor(S.profile.stats.charisma);
+      const e = Math.round(rand(4,7)*mult*chaFactor);
+      applyDelta({evidence:e});
+      let text = `You let slip a detail about the arresting officer to exactly the right person, and watch it travel through the block by lunch. Half of it comes back distorted. The useful half doesn't. (+${e} Evidence)`;
+      if(Math.random() < 0.25){
+        const med = Math.round(rand(2,4)*mult*chaFactor);
+        applyDelta({media:med});
+        text += `\n\nSomeone with a cousin at a local paper hears a version of it too. (+${med} Media)`;
+      }
+      return text;
+    }
+  },
+  {
+    id:'tradeFavor', label:'Trade a favor before you need it', side:'esc',
+    desc:'+Connections · banked goodwill that quietly makes your next bribe cheaper',
+    run(mult=1){
+      const chaFactor = statFactor(S.profile.stats.charisma);
+      const c = Math.round(rand(6,10)*mult*chaFactor);
+      applyDelta({connections:c});
+      return `You do somebody a favor before they even know they'll need it, and make sure they remember whose idea it was. Debts like that come due exactly when you need them to. (+${c} Connections)`;
+    }
+  },
+  {
+    id:'blendIn', label:'Disappear into the routine completely', side:'neutral',
+    desc:"Extra Suspicion/Heat decay today · nothing about you stands out, including today",
+    run(mult=1){
+      applyDelta({suspicion:-3, heat:-2});
+      return `You do exactly what four hundred other men in this building do today. Nobody's log has your name circled tonight.`;
+    }
+  },
+  {
+    id:'overheardTip', label:'Catch what everyone else talks over', side:'neutral',
+    desc:'Small random +Evidence or +Escape Plan · nobody watches what you overhear',
+    run(mult=1){
+      if(Math.random() < 0.5){
+        const e = Math.round(rand(3,6)*mult);
+        applyDelta({evidence:e});
+        return `Nobody thinks twice about talking around you — why would they. Today that includes a guard mentioning something about your arresting officer he shouldn't have. (+${e} Evidence)`;
+      }
+      const p = Math.round(rand(3,6)*mult);
+      applyDelta({escapePlan:p});
+      return `Nobody thinks twice about talking around you — why would they. Today that includes two guys arguing about which camera's actually working this week. (+${p} Escape Plan)`;
+    }
+  },
+  {
+    id:'nobodySuspectsMe', label:'Lean into being the guy nobody suspects', side:'neutral',
+    desc:'Halves the repeat-move penalty for the next few days · being forgettable is the whole strategy',
+    run(mult=1){
+      S.repetitionReliefUntilDay = S.day + 5;
+      return `You lean all the way into being exactly as unremarkable as you look. For the next few days, doing the same thing twice doesn't read as a pattern — it reads as who you are.`;
+    }
   }
 ];
 
 // ------------------------------------------------------------------
-// Daily move pool: base 6 (library/guard/letters/crew/scout/bribe) are
-// always available. Milestone moves join permanently once unlocked and
-// never re-lock. Exactly one profile-signature and one scenario-flavored
-// move is available at a time, matching whatever's currently selected.
-// Rest is always offered separately — it's never part of the draw.
+// Daily move pool — v2. Base 5 (library/guard/letters/crew/scout) plus
+// therapySession are always available. Every other move joins the
+// pool permanently once its unlock condition is met (S.unlockedMoveIds),
+// never re-locks, same pattern as the original milestone moves. Profile
+// signature chains are exclusive to their profile; general moves (Tier
+// 1-4 plus the demoted originals) are open to any profile once earned.
+// familyVisitDay is the one exception — a recurring, non-permanent slot
+// (see getAvailableMovePool below). Rest is always offered separately.
 // ------------------------------------------------------------------
-const BASE_MOVE_IDS = ['library','guard','letters','crew','scout','bribe'];
-const MILESTONE_MOVE_IDS = ['reviewTestimony','pressStatement','testBlindSpot'];
+const BASE_MOVE_IDS = ['library','guard','letters','crew','scout'];
+const ALWAYS_ON_MOVE_IDS = ['therapySession'];
+
+// scaleFactor: Tier 3 gates (and the day-floor on stashTools/publicRally)
+// scale relative to how many days a scenario actually gives a player to
+// earn them, so the same relative fraction of a stat cap is reachable at
+// every difficulty rather than a flat number that's trivial on Very Hard
+// and unreachable on Easy. Very Hard has the largest day budget (CYCLE_DAYS
+// plus the most appeal cycles), so it's the baseline (scaleFactor 1.0, the
+// full un-discounted gate) — shorter scenarios get a proportionally lower
+// gate. (The original brief for this rework cited "scenarioDays/42" with
+// Very Hard as the stated baseline, but CYCLE_DAYS.veryhard is actually 48,
+// not 42 — that number came from an approximated simulation flagged as
+// unverified; this uses the real CYCLE_DAYS value instead, re-validated
+// against sim/pipeline_sim.js — see README's "Required verification" note.)
+function scenarioDays(){ return S.scenario ? CYCLE_DAYS[S.scenario.id] : CYCLE_DAYS.normal; }
+function scaleFactor(){ return scenarioDays() / CYCLE_DAYS.veryhard; }
+// Connections-based Tier 3 gates only — a Gentle Giant's build leans on
+// Connections/Physique, not the credibility pipeline, so those specific
+// gates come in a bit easier for that profile.
+function giantDiscount(){ return (S.profile && S.profile.id === 'giant') ? 0.85 : 1.0; }
+
+// General moves — open to any profile once their condition is met.
+// reviewTestimony/pressStatement/testBlindSpot/bribe/leanOnInmate/
+// playGuardsAgainstEachOther/keepEveryoneTalking are original moves,
+// kept under their existing ids and re-gated here rather than deleted.
+const GENERAL_MOVE_IDS = [
+  'reviewTestimony','pressStatement','testBlindSpot','bribe','leanOnInmate',
+  'playGuardsAgainstEachOther','keepEveryoneTalking',
+  'studyCaseFile','mapRoutines','gymTime','infirmaryHelp','cultivateRoutine',
+  'pushBackOnDepartment','forgeRapport','mentorInmate','quietWorkDetail',
+  'stashTools','disguiseWork','blackmailLite','steerCoverage','publicRally','whistleblowerLeak',
+  'breachTest'
+];
 const MOVE_UNLOCK_CONDITIONS = {
   reviewTestimony: () => S.lawyer >= 25,
-  pressStatement: () => S.media >= 25,
-  testBlindSpot: () => S.escapePlan >= 40
+  pressStatement: () => S.media >= 20,
+  testBlindSpot: () => S.escapePlan >= 20,
+  bribe: () => S.connections >= 15,
+  leanOnInmate: () => S.connections >= 25,
+  playGuardsAgainstEachOther: () => S.connections >= 10,
+  keepEveryoneTalking: () => S.day >= 5,
+  studyCaseFile: () => S.day >= 3,
+  mapRoutines: () => S.day >= 3,
+  gymTime: () => S.day >= 3,
+  infirmaryHelp: () => S.family >= 10,
+  cultivateRoutine: () => (S.actionCounts.scout||0) >= 2,
+  pushBackOnDepartment: () => S.lawyer >= 30,
+  forgeRapport: () => S.connections >= 20,
+  mentorInmate: () => S.trust >= 25,
+  quietWorkDetail: () => S.trust >= 20 || (S.profile && S.profile.id === 'giant' && (S.actionCounts.laborCrew||0) >= 1),
+  stashTools: () => S.connections >= Math.round(40*scaleFactor()*giantDiscount())
+    && (S.actionCounts.bribe||0) >= 1 && S.day >= Math.round(0.35*scenarioDays()),
+  disguiseWork: () => (S.actionCounts.stashTools||0) >= 1,
+  blackmailLite: () => S.connections >= Math.round(35*scaleFactor()*giantDiscount()) && S.trust <= 40,
+  steerCoverage: () => S.media >= Math.round(40*scaleFactor()) && (S.actionCounts.pressStatement||0) >= 2,
+  publicRally: () => S.media >= Math.round(50*scaleFactor()) && S.day >= Math.round(0.5*scenarioDays()),
+  whistleblowerLeak: () => S.scenario && S.scenario.id === 'veryhard' && S.evidence >= 50,
+  breachTest: () => S.escapePlan >= 50
 };
-const PROFILE_SIGNATURE_MOVE = {
-  strategist:'crossReferenceFiles', giant:'leanOnInmate',
-  manipulator:'playGuardsAgainstEachOther', everyman:'keepEveryoneTalking'
+
+// Profile-signature chains — exclusive to their profile, 2-3 moves each,
+// own gates. crossReferenceFiles/leanOnInmate/playGuardsAgainstEachOther/
+// keepEveryoneTalking were the ORIGINAL one-per-profile always-on
+// signature moves; crossReferenceFiles is now the Strategist chain's
+// second step (re-gated below), and the other three moved to
+// GENERAL_MOVE_IDS above (still live, just no longer profile-exclusive or
+// automatic) since their profiles gained new dedicated day-1 signatures.
+const PROFILE_SIGNATURE_CHAINS = {
+  strategist: [
+    { id:'scheduleAhead', cond: () => true },
+    { id:'crossReferenceFiles', cond: () => S.evidence >= 15 },
+    { id:'contingencyPlan', cond: () => S.day >= 10 }
+  ],
+  giant: [
+    { id:'standOver', cond: () => true },
+    { id:'protectWeaker', cond: () => S.trust >= 15 },
+    { id:'laborCrew', cond: () => S.day >= 8 }
+  ],
+  manipulator: [
+    { id:'spreadRumor', cond: () => true },
+    { id:'tradeFavor', cond: () => S.connections >= 15 }
+    // blackmailLite is shared Tier 3 content (GENERAL_MOVE_IDS above) —
+    // Manipulator fits it thematically but gets no separate gate discount.
+  ],
+  everyman: [
+    { id:'blendIn', cond: () => true },
+    { id:'overheardTip', cond: () => S.day >= 5 },
+    { id:'nobodySuspectsMe', cond: () => S.suspicion >= 30 || S.heat >= 30 }
+  ]
 };
 const SCENARIO_SIGNATURE_MOVE = {
   easy:'workTheThinFile', normal:'revisitTheTimeline',
@@ -926,20 +1586,37 @@ const SCENARIO_SIGNATURE_MOVE = {
 function actionById(id){ return ACTIONS.find(a=>a.id===id); }
 
 function checkMoveUnlocks(){
-  for(const id of MILESTONE_MOVE_IDS){
+  for(const id of GENERAL_MOVE_IDS){
     if(!S.unlockedMoveIds.includes(id) && MOVE_UNLOCK_CONDITIONS[id]()){
       S.unlockedMoveIds.push(id);
+    }
+  }
+  if(S.profile){
+    const chain = PROFILE_SIGNATURE_CHAINS[S.profile.id] || [];
+    for(const step of chain){
+      if(!S.unlockedMoveIds.includes(step.id) && step.cond()){
+        S.unlockedMoveIds.push(step.id);
+      }
     }
   }
 }
 
 function getAvailableMovePool(){
-  const ids = [...BASE_MOVE_IDS];
-  for(const id of MILESTONE_MOVE_IDS){
+  const ids = [...BASE_MOVE_IDS, ...ALWAYS_ON_MOVE_IDS];
+  for(const id of GENERAL_MOVE_IDS){
     if(S.unlockedMoveIds.includes(id)) ids.push(id);
   }
-  if(S.profile && PROFILE_SIGNATURE_MOVE[S.profile.id]) ids.push(PROFILE_SIGNATURE_MOVE[S.profile.id]);
+  if(S.profile){
+    const chain = PROFILE_SIGNATURE_CHAINS[S.profile.id] || [];
+    for(const step of chain){
+      if(S.unlockedMoveIds.includes(step.id)) ids.push(step.id);
+    }
+  }
   if(S.scenario && SCENARIO_SIGNATURE_MOVE[S.scenario.id]) ids.push(SCENARIO_SIGNATURE_MOVE[S.scenario.id]);
+  // familyVisitDay: scheduled every ~10 days once Family is high enough,
+  // not a permanent unlock — it drops out of the pool again the moment
+  // it's used, until the next ~10-day window opens.
+  if(S.family >= 30 && S.scenario && (S.day - (S.lastFamilyVisitDay||0)) >= 10) ids.push('familyVisitDay');
   return ids.map(actionById).filter(Boolean);
 }
 
@@ -1031,17 +1708,33 @@ function underpreparedMult(chance){
 // anyway loses less calendar time than a first, underprepared filing.
 const JUSTICE_FAIL_EXTRA_DAYS_BASE = 12;
 
+// Heat is the Justice-track mirror of Suspicion (see the tier-ladder block
+// above) — it replaces Suspicion's old role here now that the two stats
+// are split by track. Evidence/Lawyer/Media stay the primary levers; Heat
+// is friction, not a second gate, so its coefficient is deliberately mild.
+const HEAT_CHANCE_PENALTY = 0.12;
+
 function computeJusticeChance(){
   const intFactor = (S.profile.stats.intellect - 50) * 0.006;
-  const raw = 3 + S.evidence * (0.85 + intFactor) + S.pipelineBonus - S.suspicion * 0.3;
+  const raw = 3 + S.evidence * (0.85 + intFactor) + S.pipelineBonus - S.heat * HEAT_CHANCE_PENALTY;
   return Math.max(1, Math.min(95, raw));
 }
+
+// Suspicion's direct penalty here dropped from -0.35x to -0.2x — risk is
+// now also expressed through the tier-ladder events above (search chance,
+// escape-plan setbacks, day-cost sanctions), not just this one coefficient.
+// A suspicious-but-lucky player still isn't as safe as a quiet one, though:
+// the tier 80-94 band ("Under surveillance") adds a flat extra penalty on
+// top, matching its "reduced escape attempt odds" consequence.
+const ESCAPE_SUSPICION_PENALTY = 0.2;
+const ESCAPE_SURVEILLANCE_PENALTY = 8; // flat, suspicion 80+
 
 function computeEscapeChance(){
   const physFactor = (S.profile.stats.physique - 50) * 0.006;
   const escalationMult = S.scenario ? S.scenario.security.escalationPenaltyMult : 1;
   const escalation = S.escapeAttemptsUsed * ESCAPE_ESCALATION_PENALTY * escalationMult;
-  const raw = 3 + S.escapePlan * (0.85 + physFactor) - S.suspicion * 0.35 - escalation;
+  const surveillancePenalty = S.suspicion >= 80 ? ESCAPE_SURVEILLANCE_PENALTY : 0;
+  const raw = 3 + S.escapePlan * (0.85 + physFactor) - S.suspicion * ESCAPE_SUSPICION_PENALTY - escalation - surveillancePenalty;
   return Math.max(1, Math.min(95, raw));
 }
 
@@ -1063,7 +1756,7 @@ function maybeRegenJusticeAttempt(){
   }
 }
 
-function maybeEvent(){
+function maybeEvent(actionId){
   // Very Hard only: a rare, independent negative event tied to national
   // media attention rather than the day's action — volatility distinct
   // from Hard rather than just "Hard but bigger numbers."
@@ -1073,26 +1766,14 @@ function maybeEvent(){
     S.pipelineBonus = Math.max(0, S.pipelineBonus - bonusLoss);
     return `\n\nTABLOID FLARE-UP — A syndicated piece runs your booking photo beside the senator's under a headline that isn't asking questions. Calls flood your lawyer's office, none of them helpful, and a guard captain decides you need "closer watching" for a while. (+${susp} Suspicion, credibility ground lost)`;
   }
+  // Suspicion/Heat tier-ladder events replace the old flat 3-event pool —
+  // see SUSPICION_TIERS/HEAT_TIERS above. Both tracks are checked
+  // independently since they're now fully separate stats.
+  let text = maybeTierEvent('suspicion', actionId);
+  text += maybeTierEvent('heat', actionId);
+  if(text) return text;
+
   const roll = rand(1,100);
-  const threshold = S.suspicion;
-  if(roll <= threshold * 0.6){
-    const events = [
-      ()=>{
-        applyDelta({suspicion:10, evidence:-3, escapePlan:-3});
-        return `\n\nLIGHTS FLARE AT 3 A.M. — Cell search. They tear your mattress apart and find nothing, but the write-up goes in your file regardless. Both plans lose ground. (-3 Evidence, -3 Escape Plan, +10 Suspicion)`;
-      },
-      ()=>{
-        applyDelta({suspicion:8, lawyer:-4});
-        return `\n\nAn informant sells a rumor about you to the wrong guard. Your lawyer hears the rumor too, and wants a retainer up front before touching your file again. (-4 Lawyer, +8 Suspicion)`;
-      },
-      ()=>{
-        S.day += rand(3,7);
-        applyDelta({suspicion:15});
-        return `\n\nSANCTION — A contraband sweep names you as a suspect. You draw a week in solitary. The calendar moves without you. (+Days lost, +15 Suspicion)`;
-      }
-    ];
-    return pick(events)();
-  }
   if(roll >= 96){
     const good = [
       ()=>{ applyDelta({lawyer:6}); return `\n\nA guard you helped months ago quietly vouches for you at shift briefing — word reaches the parole board's liaison, not just the guard's shift log. (+6 Lawyer)`; },
@@ -1214,24 +1895,30 @@ function chooseAction(a){
   // after the fact (that would silently wipe out any milestone text).
   S.log = '';
 
-  // ambient suspicion drift — time and routine scrutiny work against you regardless of choice
-  applyDelta({suspicion:2});
-
-  // diminishing returns for repeating the same move back-to-back
+  // diminishing returns for repeating the same move back-to-back. Everyman's
+  // nobodySuspectsMe move temporarily halves how hard this bites.
   if(a.id === S.lastActionId){
     S.actionStreak += 1;
   } else {
     S.actionStreak = 1;
   }
   S.lastActionId = a.id;
-  const mult = Math.max(0.5, 1 - 0.12*(S.actionStreak-1));
+  const reliefActive = S.day <= S.repetitionReliefUntilDay;
+  const decayRate = reliefActive ? 0.06 : 0.12;
+  const decayFloor = reliefActive ? 0.75 : 0.5;
+  const mult = Math.max(decayFloor, 1 - decayRate*(S.actionStreak-1));
 
   S.actionCounts[a.id] = (S.actionCounts[a.id] || 0) + 1;
+  if(a.id === 'familyVisitDay') S.lastFamilyVisitDay = S.day;
 
   let msg = a.run(mult);
+  // Suspicion/Heat are no longer baked into each move's own run() — a
+  // single footprint/decay pass here covers every move uniformly (see
+  // applyDailySuspicionAndHeat above).
+  msg += applyDailySuspicionAndHeat(a.id);
   msg += maybeGrapevineTip();
   msg += maybeEvidenceChallenge();
-  msg += maybeEvent();
+  msg += maybeEvent(a.id);
   S.log = msg + S.log; // main narrative first, then any milestone beats that fired today
   checkTrialDeadline();
   if(!S.over) drawTodayMoves(); // a new day started — redraw the 3 offered moves
@@ -1241,7 +1928,7 @@ function chooseAction(a){
 function pulseClass(key, current){
   const prev = prevStats[key];
   if(prev === undefined || current === prev) return '';
-  if(key === 'suspicion') return current > prev ? 'pulse-warn' : 'pulse-up';
+  if(key === 'suspicion' || key === 'heat') return current > prev ? 'pulse-warn' : 'pulse-up';
   return current > prev ? 'pulse-up' : 'pulse-warn';
 }
 
@@ -1249,7 +1936,9 @@ function statBlock(){
   const html = `
   <div class="stats">
     <div class="stat"><div class="k">Connections</div><div class="v ${pulseClass('connections',S.connections)}">${S.connections}</div></div>
+    <div class="stat"><div class="k">Trust</div><div class="v ${pulseClass('trust',S.trust)}">${S.trust}</div></div>
     <div class="stat ${S.suspicion>=60?'warn':''}"><div class="k">Suspicion</div><div class="v ${pulseClass('suspicion',S.suspicion)}">${S.suspicion}</div></div>
+    <div class="stat ${S.heat>=60?'warn':''}"><div class="k">Heat</div><div class="v ${pulseClass('heat',S.heat)}">${S.heat}</div></div>
   </div>`;
   return html;
 }
@@ -1733,7 +2422,8 @@ function resetGameState(){
   const famStart = S.scenario ? S.scenario.family.start : 15;
   S.day=1; S.durationMs=0; S.sessionStartTs=null;
   S.family=famStart; S.lawyer=0; S.media=0; S.pipelineMilestones={}; S.pipelineBonus=0;
-  S.connections=15; S.evidence=5; S.escapePlan=5; S.suspicion=10;
+  S.connections=15; S.evidence=5; S.escapePlan=5; S.suspicion=10; S.heat=10; S.trust=10;
+  S.recentActions=[]; S.firedPatterns={}; S.lastFamilyVisitDay=0; S.repetitionReliefUntilDay=0;
   S.over=false; S.ending=null;
   S.lastActionId=null; S.actionStreak=0;
   S.actionCounts = { library:0, guard:0, letters:0, crew:0, scout:0, bribe:0, rest:0 };
@@ -1754,13 +2444,13 @@ function resetGameState(){
   S.unlockedMoveIds = [];
   S.todayMoves = [];
   S.log = "New cell, same choice. You wake up on the concrete shelf they call a bunk. Nobody's listening yet. Today, you decide what kind of man gets you out.";
-  prevStats = { connections:S.connections, evidence:S.evidence, escapePlan:S.escapePlan, suspicion:S.suspicion };
+  prevStats = { connections:S.connections, evidence:S.evidence, escapePlan:S.escapePlan, suspicion:S.suspicion, heat:S.heat, trust:S.trust };
   // profile & scenario are both already set for a same-character/same-case
   // restart (see restart() below) — draw day 1's moves immediately so the
   // game view never renders with an empty move list. When either is still
   // null (changeProfile/changeDifficulty, on their way back to selection
   // screens), selectProfile() below draws once both are set again.
-  if(S.scenario && S.profile) drawTodayMoves();
+  if(S.scenario && S.profile){ checkMoveUnlocks(); drawTodayMoves(); }
 }
 
 function restart(){
@@ -1836,7 +2526,7 @@ function selectScenario(id){
 
 function selectProfile(id){
   S.profile = PROFILES.find(p=>p.id===id);
-  if(S.scenario) drawTodayMoves(); // day 1 — both profile and scenario are now set
+  if(S.scenario){ checkMoveUnlocks(); drawTodayMoves(); } // day 1 — both profile and scenario are now set
   S.view = 'game';
   resumeSessionTime();
   saveState();
@@ -1864,25 +2554,27 @@ Four cases are on file, each harder than the last — a robbery, a murder, a kil
   },
   {
     title: 'Your Moves',
-    body: `Some days you build toward getting out through the front door:
+    body: `Some days you build toward getting out through the front door — the law library, a guard favor, letters to your lawyer and family. Other days you build toward getting out the hard way — trading favors with the crew, scouting the rotation, bribing for tools. Some days the smartest move is nothing at all: keeping your head down costs you a day but buys you room to breathe.
 
-  Volunteer in the law library — slow, steady evidence work.
-  Do a guard a quiet favor — builds trust with the people who can vouch for you.
-  Write to your lawyer & family — the people on the outside are how a case actually moves. Family first. Then a lawyer takes it seriously. Eventually, if it's big enough, the papers do too.
-
-Other days you build toward getting out the hard way:
-
-  Trade favors with the cellblock crew — connections, and pieces of a plan.
-  Scout the guard rotations — timing, patience, information.
-  Bribe a guard for tools — expensive, fast, and impossible to take back.
-
-Some days, the smartest move is nothing at all — keeping your head down costs you a day but buys you room to breathe.
+That's the start of it, not the whole of it. Prove yourself steady, patient, or connected enough and doors open that weren't there on day one — a quieter routine to fall into, a cellmate worth mentoring, leverage worth using, a rally you didn't ask for but won't turn down. Who you are shapes which of those doors opens first.
 
 When you're ready to try an ending, that attempt IS your day — you're not building anything else on top of it. Walking in confident is safer than walking in desperate; a case or a plan that isn't ready yet costs you more if it falls apart than one that was genuinely close.
 
 The board will only hear you so many times before they stop listening for a while. The fence doesn't forget a failed run either — every attempt makes guards watch harder, and the next try costs you more than the last.
 
 These aren't the only options you'll ever have. Pay attention — opportunities show up when you've earned them, not before.`
+  },
+  {
+    title: 'Suspicion & Heat',
+    body: `Getting out draws attention. Which kind depends on which way you're going.
+
+Suspicion is what the building itself notices — scouting, trading favors, moving tools, testing a gap in the rotation. It only rises on days you actually push the Escape plan forward, and it eases back down on any day you don't. Stay quiet and it fades. Push hard and repeat the same move too many nights running, and guards start reading a pattern into it — the same handful of moves inside a short stretch of days can draw more attention together than any one of them would alone.
+
+Heat is what the outside world notices — a statement to the press, pushing back on the department, getting out ahead of your own story. It works the same way on the Justice side: only specific, public moves generate it, and it fades when you're not courting that kind of attention. Most of what builds a case — the library, your lawyer, your family — never touches it at all.
+
+Both climb in tiers, not just numbers. Unnoticed is safe. Get flagged, watched, or worse, and searches, sanctions, and setbacks get more frequent and more expensive the further up the ladder you climb. Let either one run all the way to the top and whatever you're building that day is in real danger.
+
+Staying quiet doesn't disqualify you from getting caught — a suspicious man still gets unlucky less safely than a quiet one does. But for the first time, quiet is actually quiet.`
   },
   {
     title: 'Who You Are',
@@ -1906,7 +2598,7 @@ Physical presence sharpens the moves built on risk and force — and raises your
 
 Charisma sharpens the moves built on people — guards, cellmates, the crew — and it's what actually moves your credibility with the outside world.
 
-A level head doesn't build anything on its own, but it softens how hard suspicion hits you when things go sideways.
+A level head doesn't build anything on its own, but it softens how hard Suspicion climbs when an Escape move goes sideways.
 
 Playing to what you're naturally good at is the safer road. Playing against your own grain is harder, costs more, and takes longer to pay off — but a case solved against the grain gets remembered differently than one solved the easy way.`
   },
@@ -2190,7 +2882,7 @@ function renderGameView(){
     </div>
   `;
 
-  prevStats = { connections:S.connections, evidence:S.evidence, escapePlan:S.escapePlan, suspicion:S.suspicion };
+  prevStats = { connections:S.connections, evidence:S.evidence, escapePlan:S.escapePlan, suspicion:S.suspicion, heat:S.heat, trust:S.trust };
   return html;
 }
 

@@ -36,6 +36,121 @@ This replaced an earlier flat single stat that conflated all of the above
 into one number with one meaning — see the simulation harness below for
 how the replacement was validated before shipping.
 
+## Suspicion & Heat (v2)
+
+The original single `suspicion` stat rose roughly +2/day *regardless of
+what the player did*, then hit a flat 3-event pool once it crossed a
+threshold. That made cautious play pointless (the number climbed either
+way) and made the stat feel inert once maxed out. v2 splits it into two
+independent, per-track stats — `S.suspicion` (Escape) and `S.heat`
+(Justice) — each driven **only** by a per-action footprint on the days
+that track's actions are taken, never an ambient tax:
+
+```
+suspicion_delta = footprint(action) × trialProximityMult × repMult × biasMult   [Escape-track action days]
+suspicion_delta = -3                                                            [any day with no Escape-track action]
+heat_delta      = footprint(action) × trialProximityMult × repMult              [Heat-track action days]
+heat_delta      = -2                                                            [any day with no Heat-track action]
+```
+
+Taking an action on the *other* track (or Rest) counts as "no action" for
+decay purposes — quiet play now actually reads as quiet.
+
+- **Footprints** — `FOOTPRINT_SUSPICION`/`FOOTPRINT_HEAT` in `index.html`.
+  Suspicion: scout 2, mapRoutines 2, cultivateRoutine 3, crew 4,
+  leanOnInmate 5, forgeRapport 5, testBlindSpot 6, stashTools 7, bribe 7,
+  disguiseWork 8, breachTest 10. Heat: pressStatement 6,
+  pushBackOnDepartment 7, steerCoverage 8, publicRally 8, whistleblowerLeak
+  9 (Very Hard only). Most Justice moves (library, letters, reviewTestimony,
+  studyCaseFile, etc.) generate zero Heat by design — only the handful of
+  moves that put you in front of the public or the department do.
+- **`trialProximityMult()`** — >50% of the current trial cycle remaining =
+  1.0×, 25–50% = 1.25×, 10–25% = 1.5×, <10% = 1.8×. Same footprint costs
+  more the closer the trial date gets.
+- **`repetitionMult()`** — reuses `S.actionStreak` (the existing
+  back-to-back-repeat counter) but in the *opposite* direction from the
+  reward-decay `mult`: `min(1.6, 1 + 0.15×(streak-1))`. Repeating a move
+  gets less profitable *and* more noticeable at once.
+- **`suspicionBiasMult()`** — once Suspicion has already crossed 70
+  through the player's own play, further Escape-track footprint lands
+  ~1.15× harder. Only ever triggers for a player who got there themselves;
+  a quiet player never crosses 70 in the first place.
+- **Pattern detection** — `PATTERNS` in `index.html`: a small combo table,
+  not a subsystem. If a defined set of Escape-track actions all land
+  within a rolling day window, it fires a flat bonus + distinct log line
+  even if each action individually stayed under a tier threshold (e.g.
+  `scout+bribe+leanOnInmate` within 4 days → "Preparing a Breakout", +12).
+- **Tier ladders** — `SUSPICION_TIERS`/`HEAT_TIERS` replace the old flat
+  3-event pool. Six bands each (0-19 through 95-100), rolled once per day
+  independently per track; each band's event pool gets worse (search
+  frequency, Escape Plan/Evidence/Lawyer/Media setbacks, day-cost
+  sanctions) climbing the ladder. The top band (95-100) gets a
+  near-guaranteed severe event specifically on a day the matching track's
+  action is taken.
+- **Chance formulas** — `computeEscapeChance()`'s Suspicion penalty
+  dropped from `-0.35×` to `-0.2×` (risk is now also expressed through the
+  tier ladder, not just this coefficient), plus a flat `-8` once Suspicion
+  hits 80+ (the "Under surveillance" tier's "reduced escape odds").
+  `computeJusticeChance()` now subtracts Heat instead of the old shared
+  Suspicion term, at a deliberately mild `-0.12×` — Evidence/Lawyer/Media
+  remain the primary Justice levers; Heat is friction, not a second gate.
+
+## Expanded move pool (v2)
+
+The move pool grew from ~18 to ~46 entries (drawn 3/day as before — Rest
+is always offered on top), organized into tiers with earned-through-play
+gates instead of flat numbers for the latest content:
+
+- **Tier 0** (day 1, unchanged): library, guard, letters, crew, scout,
+  rest.
+- **Tier 1** (day ≥ 3 or a light condition): studyCaseFile, mapRoutines,
+  gymTime, infirmaryHelp (Family ≥ 10), cultivateRoutine (scout used ≥ 2),
+  therapySession (always available).
+- **Tier 2** (mid stat thresholds): pressStatement (Media ≥ 20),
+  pushBackOnDepartment (Lawyer ≥ 30), leanOnInmate (Connections ≥ 25),
+  testBlindSpot (Escape Plan ≥ 20), forgeRapport (Connections ≥ 20),
+  mentorInmate (Trust ≥ 25), quietWorkDetail (Trust ≥ 20), bribe
+  (Connections ≥ 15).
+- **Tier 3** (earned, *scaled* gates — see below): stashTools,
+  disguiseWork (chained off stashTools), blackmailLite, steerCoverage
+  (Media/pressStatement-gated; the "control your own story" move — kept a
+  distinct id from the existing Very Hard scenario-signature move also
+  called `controlTheStory`, which is untouched), publicRally,
+  whistleblowerLeak (Very Hard only).
+- **Tier 4** (late-game): breachTest (Escape Plan ≥ 50), familyVisitDay
+  (Family ≥ 30, recurring every ~10 days — appears in the draw like a
+  milestone, not player-triggered on demand).
+- **Profile signature chains** (2-3 per profile, exclusive to that
+  profile): Strategist scheduleAhead → crossReferenceFiles (re-gated to
+  Evidence ≥ 15, was the old always-on signature) → contingencyPlan (day ≥
+  10); Gentle Giant standOver → protectWeaker (Trust ≥ 15) → laborCrew (day
+  ≥ 8, also unlocks quietWorkDetail earlier for this profile); Manipulator
+  spreadRumor → tradeFavor (Connections ≥ 15, discounts bribe's footprint
+  by 1 once used); Everyman blendIn → overheardTip (day ≥ 5) →
+  nobodySuspectsMe (Suspicion or Heat ≥ 30, halves the repeat-move penalty
+  for 5 days). The original one-per-profile always-on signatures
+  (`leanOnInmate`, `playGuardsAgainstEachOther`, `keepEveryoneTalking`) are
+  kept under their existing ids, just demoted to general Tier 2-ish
+  content rather than deleted.
+- **`Trust`** — a new hidden 0-100 stat (parallel to Connections but
+  reputation- rather than transaction-based), gating several Tier 2/3/
+  profile moves. Built by gymTime, infirmaryHelp, mentorInmate,
+  quietWorkDetail, protectWeaker, laborCrew.
+
+**Scaling** — Tier 3 gates use `scaleFactor = scenarioDays /
+CYCLE_DAYS.veryhard` (Very Hard = 1.0, the full un-discounted gate; Easy ≈
+0.73) so the same relative fraction of a stat cap is reachable at every
+difficulty rather than a flat number that's trivial on Very Hard and
+unreachable on Easy. (The original task brief for this cited
+`scenarioDays/42` with Very Hard as "the baseline," but `CYCLE_DAYS.veryhard`
+is actually 48, not 42 — Hard is 42. That number came from an approximated
+simulation outside the real codebase, flagged as unverified; this uses the
+real `CYCLE_DAYS` value instead, re-validated against `sim/pipeline_sim.js`
+— see "v2 verification" below.) Connections-based Tier 3 gates
+(`stashTools`, `blackmailLite`) also apply a 0.85× `giantDiscount` for the
+Gentle Giant profile, whose build leans on Connections/Physique rather
+than the credibility pipeline.
+
 ## Difficulty Scenarios
 
 Before picking a character, the player picks a *case* — four tiers, each a
@@ -214,6 +329,78 @@ a maximum-security escape, which is exactly the path the profile and the
 scenario both agree they're worst at. Each profile's *suited* path stays
 meaningfully alive at every tier.
 
+**This table is the pre-v2 baseline**, kept in the harness (`BASELINE_WIN_RATES`)
+purely as the reference point for Report 1's shift-detection below. It no
+longer describes current behavior — see "v2 verification" immediately
+below for what actually shipped and why the numbers moved.
+
+## v2 verification
+
+The Suspicion/Heat rework and the scaled Tier 3 move-unlock gates were
+first validated with an approximated simulation *outside* this codebase
+(a simplified stat-gain model, not the real `applyDelta`/`rampEfficiency`
+pipeline). Two things that approximation could not conclusively verify
+were re-checked here, against `sim/pipeline_sim.js`'s real bot/formula
+port, across all 16 profile × scenario combos:
+
+1. **Justice Tier 3 reachability** (`checkTier3JusticeReachability()`) —
+   whether `steerCoverage`/`publicRally` (the renamed/re-gated
+   `controlTheStory`-equivalent and `publicRally`) actually unlock before
+   a justice-greedy bot's run ends. **Result: reachable in most combos
+   (1-12% of runs unlock at least one), but the Strategist profile —
+   and occasionally Manipulator — lands at 0% in several combos**, varying
+   run to run at N=150. Root cause (see finding below): a
+   Strategist-piloted bot wins so fast, so early, that Media never has
+   time to accumulate — it's not that the gate itself is unreachable,
+   it's that optimal Justice play doesn't linger long enough to reach it.
+   This is the same underlying issue as the win-rate finding below, not a
+   separate bug.
+2. **Quiet/patient Escape win rate** (`checkQuietEscapeViability()`) — a
+   bot that only takes Escape-track actions while Suspicion stays under
+   45 (well below the "Watched" tier) and otherwise rests, checking
+   whether it can still reach the existing Escape Plan ≥ 70 attempt
+   threshold at a healthy rate. **Result: passes cleanly — 41-91% win
+   rate across all 16 combos**, comfortably clear of a 20% floor. The
+   lowered `-0.2×` Suspicion penalty and the new decay-when-quiet
+   mechanic do what they were meant to: a genuinely cautious Escape
+   build stays winnable, not just "not impossible."
+3. **Very Hard / Strategist / Escape regression check** — this was
+   already a known-fragile combo (~0% in the pre-v2 baseline). Post-v2 it
+   sits at **~16-17%**, an improvement, not a regression — consistent
+   with the lowered Suspicion penalty on `computeEscapeChance()`.
+
+**A finding beyond the two required checks:** Report 1 (win% shift vs. the
+baseline table above) flags large positive swings on Justice across
+almost every combo — several profiles jump from the baseline's 1-49% up
+toward 95-100%. This traces to a real, structural consequence of
+decoupling the two stats rather than a bug in either formula: the old
+shared `suspicion` stat rose +2/day *regardless of action*, which meant
+long Justice-focused games got monotonically riskier just from calendar
+time passing, independent of what the player actually did. That was
+exactly the "broken, rises regardless of play style" behavior this rework
+set out to remove — but it was also incidentally doing double duty as
+Justice's main difficulty brake. Heat, by design (`Evidence/Lawyer/Media
+remain the primary levers; Heat is friction, not a second gate` — see
+"Suspicion & Heat" above), only rises from 5 specific public-facing moves
+and decays otherwise, so a Justice build that never touches those moves
+now faces almost no downward pressure on `computeJusticeChance()` at all,
+and Evidence itself was never scenario-throttled (only Family/Lawyer-ramp/
+pipelineBonus are). Raising the justice-bot's attempt-confidence threshold
+in the harness (a test-only change, not a game-formula change) didn't
+meaningfully change this — Evidence simply accumulates fast enough,
+independent of difficulty, that most Justice wins land within the first
+15-20 days regardless of scenario.
+
+This is flagged, not silently patched: fixing it properly means either
+scenario-throttling raw Evidence gain (a change to the Credibility
+pipeline, out of scope for this move-pool/Suspicion PR) or giving Justice
+attempts their own repeat-escalation mechanic the way Escape already has
+(`ESCAPE_ESCALATION_PENALTY`) — both are real design decisions, not
+one-line tuning, and belong in a dedicated balance-focused follow-up
+rather than bundled into this rework. `sim/pipeline_sim.js`'s existing
+convention is report-only (flag deviations, let a human retune); this
+finding follows that same convention.
+
 ## Known Gaps
 
 | Item | Status |
@@ -223,3 +410,5 @@ meaningfully alive at every tier.
 | Save system only knows `S.profile`, not `S.scenario` | Partial — `S.scenario` now round-trips through `localStorage` alongside `S.profile`; still no versioned migration |
 | No day/attempt-cost mechanics — Justice was gated by a flat day floor, and neither ending's fail penalty scaled with confidence or repeat attempts | Done — `MIN_JUSTICE_DAY` removed, attempts spend their own day, and fail penalties scale via `underpreparedMult()` plus scaled fail day-costs, described above |
 | No grading/ranking on the ending screen | Done — `computeGrade()` produces a letter grade, raw score, generated comment, and Elite badge, described above |
+| Single Suspicion stat rose regardless of play style and went inert past a flat 3-event pool; move pool felt repetitive across playthroughs | Done (v2) — split into Suspicion (Escape)/Heat (Justice), each footprint-driven and decaying, plus a tier ladder and ~28 new moves across earned-through-play gates — see "Suspicion & Heat" and "Expanded move pool" above |
+| v2: Justice win rate is now inflated (often 95-100%) across most profile x scenario combos, and Strategist rarely lingers long enough to reach Justice Tier 3 content | Open — root-caused in "v2 verification" above (Heat's deliberately mild, Evidence isn't scenario-throttled); needs a dedicated balance follow-up, not bundled into this PR |
