@@ -1,9 +1,11 @@
-// Node simulation harness for the Family/Lawyer/Media Credibility pipeline
-// AND the Difficulty Scenario system layered on top of it. Ports the
-// balance-relevant functions from index.html (stat factors, the pipeline,
-// actions, odds formulas, milestone checks, scenario modifiers) so a
-// rework of either system can be validated (win rates per profile x
-// scenario) before it ships in the real game. Run with:
+// Node simulation harness for the Family/Lawyer/Media Credibility pipeline,
+// the Difficulty Scenario system, AND the v2 Suspicion/Heat + expanded move
+// pool rework layered on top. Ports the balance-relevant functions from
+// index.html (stat factors, the pipeline, actions, odds formulas, milestone
+// checks, scenario modifiers, the Suspicion/Heat footprint+tier engine, the
+// v2 move pool/unlock system) so a rework of any of it can be validated
+// (win rates per profile x scenario) before it ships in the real game. Run
+// with:
 //   node sim/pipeline_sim.js
 
 function rand(a,b){ return Math.floor(Math.random()*(b-a+1))+a; }
@@ -90,6 +92,7 @@ function applyDelta(S, d){
   if(d.media) S.media = clamp(S.media + d.media);
   if(d.connections) S.connections = clamp(S.connections + d.connections);
   if(d.evidence) S.evidence = clamp(S.evidence + d.evidence);
+  if(d.trust) S.trust = clamp(S.trust + d.trust);
   if(d.escapePlan){
     let p = d.escapePlan;
     if(p > 0 && S.scenario) p = Math.round(p * S.scenario.security.escapePlanMult);
@@ -104,8 +107,150 @@ function applyDelta(S, d){
     }
     S.suspicion = clamp(S.suspicion + s);
   }
+  if(d.heat){
+    S.heat = clamp(S.heat + Math.round(d.heat));
+  }
   checkMilestones(S);
   checkMoveUnlocks(S);
+}
+
+// ---------------------------------------------------------------------
+// v2: Suspicion (Escape-track) / Heat (Justice-track) footprint engine —
+// mirrors the block of the same name in index.html.
+// ---------------------------------------------------------------------
+const FOOTPRINT_SUSPICION = {
+  scout:2, mapRoutines:2, cultivateRoutine:3, crew:4, leanOnInmate:5,
+  forgeRapport:5, testBlindSpot:6, stashTools:7, bribe:7, disguiseWork:8,
+  breachTest:10
+};
+const SUSPICION_DECAY = -3;
+
+const FOOTPRINT_HEAT = {
+  pressStatement:6, pushBackOnDepartment:7, steerCoverage:8, publicRally:8,
+  whistleblowerLeak:9, controlTheStory:8
+};
+const HEAT_DECAY = -2;
+
+function trialProximityMult(S){
+  if(!S.scenario || !S.trialDeadline) return 1;
+  const frac = Math.max(0, S.trialDeadline - S.day) / S.trialDeadline;
+  if(frac > 0.5) return 1.0;
+  if(frac > 0.25) return 1.25;
+  if(frac > 0.10) return 1.5;
+  return 1.8;
+}
+
+function repetitionMult(S){
+  return Math.min(1.6, 1 + 0.15*(S.actionStreak-1));
+}
+
+function suspicionBiasMult(S){ return S.suspicion >= 70 ? 1.15 : 1; }
+
+function footprintFor(S, id, base){
+  let v = base;
+  if(id === 'bribe' && (S.actionCounts.tradeFavor||0) > 0) v = Math.max(1, v - 1);
+  return v;
+}
+
+function recordRecentAction(S, id){
+  S.recentActions.push({day:S.day, id});
+  const cutoff = S.day - 10;
+  S.recentActions = S.recentActions.filter(e => e.day > cutoff);
+}
+
+const PATTERNS = [
+  { actions:['scout','bribe','leanOnInmate'], withinDays:4, bonus:12, label:'Preparing a Breakout' },
+  { actions:['stashTools','disguiseWork'], withinDays:5, bonus:14, label:'Dry Run Spotted' }
+];
+
+function checkPatterns(S){
+  for(const p of PATTERNS){
+    if(S.firedPatterns[p.label]) continue;
+    const windowStart = S.day - p.withinDays + 1;
+    const seen = new Set(S.recentActions.filter(e => e.day >= windowStart).map(e => e.id));
+    if(p.actions.every(a => seen.has(a))){
+      S.firedPatterns[p.label] = true;
+      applyDelta(S, {suspicion: p.bonus});
+    }
+  }
+}
+
+function applyDailySuspicionAndHeat(S, actionId){
+  const susBase = FOOTPRINT_SUSPICION[actionId];
+  if(susBase != null){
+    const footprint = footprintFor(S, actionId, susBase);
+    let delta = footprint * trialProximityMult(S) * repetitionMult(S) * suspicionBiasMult(S);
+    applyDelta(S, {suspicion: Math.round(delta)});
+  } else {
+    applyDelta(S, {suspicion: SUSPICION_DECAY});
+  }
+
+  const heatBase = FOOTPRINT_HEAT[actionId];
+  if(heatBase != null){
+    let delta = heatBase * trialProximityMult(S) * repetitionMult(S);
+    applyDelta(S, {heat: Math.round(delta)});
+  } else {
+    applyDelta(S, {heat: HEAT_DECAY});
+  }
+
+  recordRecentAction(S, actionId);
+  checkPatterns(S);
+}
+
+// Tier ladders — stat-effect-only port of SUSPICION_TIERS/HEAT_TIERS in
+// index.html (narrative text dropped, magnitudes preserved).
+const SUSPICION_TIERS = [
+  { min:0,  max:19 },
+  { min:20, max:39, chance:0.12, effects:[ (S,mult)=> applyDelta(S, {escapePlan:-Math.round(3*mult)}) ] },
+  { min:40, max:59, chance:0.18, effects:[
+    (S,mult)=> applyDelta(S, {escapePlan:-Math.round(6*mult)}),
+    (S,mult)=> applyDelta(S, {suspicion:4})
+  ]},
+  { min:60, max:79, chance:0.24, effects:[
+    (S,mult)=> applyDelta(S, {escapePlan:-Math.round(10*mult), connections:-Math.round(4*mult)}),
+    (S,mult)=> { S.day += rand(2,4); applyDelta(S, {suspicion:6}); }
+  ]},
+  { min:80, max:94, chance:0.32, effects:[
+    (S,mult)=> { S.day += rand(4,8); applyDelta(S, {escapePlan:-Math.round(16*mult)}); },
+    (S,mult)=> applyDelta(S, {escapePlan:-Math.round(12*mult)})
+  ]},
+  { min:95, max:100, chance:0.55, escapeTrackChance:0.9, effects:[
+    (S,mult)=> { S.day += rand(6,12); applyDelta(S, {escapePlan:-Math.round(25*mult), connections:-Math.round(10*mult)}); }
+  ]}
+];
+
+const HEAT_TIERS = [
+  { min:0,  max:19 },
+  { min:20, max:39, chance:0.12, effects:[ (S)=> applyDelta(S, {family:-2}) ] },
+  { min:40, max:59, chance:0.18, effects:[ (S)=> applyDelta(S, {evidence:-rand(4,8)}) ] },
+  { min:60, max:79, chance:0.24, effects:[
+    (S)=> applyDelta(S, {evidence:-rand(6,12)}),
+    (S)=> applyDelta(S, {lawyer:-5})
+  ]},
+  { min:80, max:94, chance:0.32, effects:[
+    (S)=> applyDelta(S, {lawyer:-8}),
+    (S)=> applyDelta(S, {media:-6})
+  ]},
+  { min:95, max:100, chance:0.55, escapeTrackChance:0.9, effects:[
+    (S)=> applyDelta(S, {lawyer:-rand(10,16), media:-rand(6,10)})
+  ]}
+];
+
+function tierFor(value, tiers){
+  return tiers.find(t => value >= t.min && value <= t.max) || tiers[0];
+}
+
+function maybeTierEvent(S, track, actionId){
+  const tiers = track === 'suspicion' ? SUSPICION_TIERS : HEAT_TIERS;
+  const value = track === 'suspicion' ? S.suspicion : S.heat;
+  const tier = tierFor(value, tiers);
+  if(!tier.effects || tier.effects.length === 0) return;
+  const footprintTable = track === 'suspicion' ? FOOTPRINT_SUSPICION : FOOTPRINT_HEAT;
+  const onTrackToday = footprintTable[actionId] != null;
+  let chance = tier.chance || 0;
+  if(onTrackToday && tier.escapeTrackChance != null) chance = tier.escapeTrackChance;
+  if(Math.random() >= chance) return;
+  pick(tier.effects)(S, 1);
 }
 
 const LIBRARY_SUSPICION_THRESHOLD = 5;
@@ -159,13 +304,13 @@ const ACTIONS = {
   },
   crew(S, mult){
     const chaFactor = statFactor(S.profile.stats.charisma);
-    const c = Math.round(rand(5,9)*mult*chaFactor), p = Math.round(rand(3,6)*mult*chaFactor), s = rand(4,8);
-    applyDelta(S, {connections:c, escapePlan:p, suspicion:s});
+    const c = Math.round(rand(5,9)*mult*chaFactor), p = Math.round(rand(3,6)*mult*chaFactor);
+    applyDelta(S, {connections:c, escapePlan:p});
   },
   scout(S, mult){
     const intFactor = statFactor(S.profile.stats.intellect);
-    const p = Math.round(rand(5,9)*mult*intFactor), s = rand(1,4);
-    applyDelta(S, {escapePlan:p, suspicion:s});
+    const p = Math.round(rand(5,9)*mult*intFactor);
+    applyDelta(S, {escapePlan:p});
   },
   bribe(S, mult){
     const phyFactor = statFactor(S.profile.stats.physique);
@@ -173,15 +318,11 @@ const ACTIONS = {
       applyDelta(S, {suspicion:6});
       return;
     }
-    const p = Math.round(rand(10,16)*mult*phyFactor), s = rand(8,14);
-    applyDelta(S, {connections:-12, escapePlan:p, suspicion:s});
+    const p = Math.round(rand(10,16)*mult*phyFactor);
+    applyDelta(S, {connections:-12, escapePlan:p});
   },
-  rest(S){
-    const s = rand(4,9);
-    applyDelta(S, {suspicion:-s});
-  },
+  rest(S){ /* no-op — decay handled centrally now */ },
 
-  // Milestone-unlocked moves — mirrors index.html.
   reviewTestimony(S, mult){
     const intFactor = statFactor(S.profile.stats.intellect);
     const e = Math.round(rand(7,12)*mult*intFactor);
@@ -192,20 +333,16 @@ const ACTIONS = {
     const chaFactor = statFactor(S.profile.stats.charisma);
     const e = Math.round(rand(9,15)*mult*chaFactor);
     const med = Math.round(rand(3,5)*mult*chaFactor);
-    const s = rand(6,10);
-    applyDelta(S, {evidence:e, media:med, suspicion:s});
+    applyDelta(S, {evidence:e, media:med});
   },
   testBlindSpot(S, mult){
     const phyFactor = statFactor(S.profile.stats.physique);
     if(Math.random() < 0.7){
       const p = Math.round(rand(10,16)*mult*phyFactor);
       applyDelta(S, {escapePlan:p});
-    } else {
-      applyDelta(S, {suspicion: rand(10,16)});
     }
   },
 
-  // Profile-signature moves — mirrors index.html.
   crossReferenceFiles(S, mult){
     const intFactor = statFactor(S.profile.stats.intellect);
     const e = Math.round(rand(6,10)*mult*intFactor);
@@ -239,11 +376,9 @@ const ACTIONS = {
   keepEveryoneTalking(S, mult){
     const e = Math.round(rand(3,5)*mult);
     const p = Math.round(rand(3,5)*mult);
-    const s = -rand(1,2);
-    applyDelta(S, {evidence:e, escapePlan:p, suspicion:s});
+    applyDelta(S, {evidence:e, escapePlan:p});
   },
 
-  // Scenario-flavored moves — mirrors index.html.
   workTheThinFile(S, mult){
     const intFactor = statFactor(S.profile.stats.intellect);
     const e = Math.round(rand(10,16)*mult*intFactor);
@@ -265,16 +400,127 @@ const ACTIONS = {
     const chaFactor = statFactor(S.profile.stats.charisma);
     const e = Math.round(rand(10,15)*mult*chaFactor);
     const med = Math.round(rand(4,6)*mult*chaFactor);
-    const s = rand(7,11);
-    applyDelta(S, {evidence:e, media:med, suspicion:s});
+    applyDelta(S, {evidence:e, media:med});
+  },
+
+  // -------- v2: expanded move pool --------
+  studyCaseFile(S, mult){
+    const intFactor = statFactor(S.profile.stats.intellect);
+    applyDelta(S, {evidence: Math.round(rand(5,9)*mult*intFactor)});
+  },
+  mapRoutines(S, mult){
+    const intFactor = statFactor(S.profile.stats.intellect);
+    applyDelta(S, {escapePlan: Math.round(rand(4,7)*mult*intFactor)});
+  },
+  gymTime(S, mult){
+    const phyFactor = statFactor(S.profile.stats.physique);
+    applyDelta(S, {trust: Math.round(rand(2,5)*mult*phyFactor)});
+  },
+  infirmaryHelp(S, mult){
+    applyDelta(S, {trust: Math.round(rand(3,6)*mult), family: Math.round(rand(1,3)*mult)});
+  },
+  cultivateRoutine(S, mult){
+    const intFactor = statFactor(S.profile.stats.intellect);
+    applyDelta(S, {escapePlan: Math.round(rand(6,10)*mult*intFactor)});
+  },
+  therapySession(S, mult){
+    applyDelta(S, {suspicion:-2, heat:-1});
+  },
+  pushBackOnDepartment(S, mult){
+    const intFactor = statFactor(S.profile.stats.intellect);
+    applyDelta(S, {evidence: Math.round(rand(8,13)*mult*intFactor)});
+  },
+  forgeRapport(S, mult){
+    const chaFactor = statFactor(S.profile.stats.charisma);
+    applyDelta(S, {connections: Math.round(rand(6,10)*mult*chaFactor)});
+  },
+  mentorInmate(S, mult){
+    const intFactor = statFactor(S.profile.stats.intellect);
+    applyDelta(S, {trust: Math.round(rand(3,6)*mult), evidence: Math.round(rand(3,6)*mult*intFactor)});
+  },
+  quietWorkDetail(S, mult){
+    applyDelta(S, {trust: Math.round(rand(4,7)*mult)});
+  },
+  stashTools(S, mult){
+    const phyFactor = statFactor(S.profile.stats.physique);
+    applyDelta(S, {escapePlan: Math.round(rand(9,14)*mult*phyFactor)});
+  },
+  disguiseWork(S, mult){
+    const intFactor = statFactor(S.profile.stats.intellect);
+    applyDelta(S, {escapePlan: Math.round(rand(10,15)*mult*intFactor)});
+  },
+  blackmailLite(S, mult){
+    const chaFactor = statFactor(S.profile.stats.charisma);
+    applyDelta(S, {connections: Math.round(rand(7,12)*mult*chaFactor)});
+    if(Math.random() < 0.35) applyDelta(S, {evidence: Math.round(rand(3,7)*mult*chaFactor)});
+  },
+  steerCoverage(S, mult){
+    const chaFactor = statFactor(S.profile.stats.charisma);
+    applyDelta(S, {evidence: Math.round(rand(9,14)*mult*chaFactor), media: Math.round(rand(4,7)*mult*chaFactor)});
+  },
+  publicRally(S, mult){
+    const chaFactor = statFactor(S.profile.stats.charisma);
+    applyDelta(S, {family: Math.round(rand(4,8)*mult*chaFactor), media: Math.round(rand(5,9)*mult*chaFactor)});
+  },
+  whistleblowerLeak(S, mult){
+    const intFactor = statFactor(S.profile.stats.intellect);
+    applyDelta(S, {evidence: Math.round(rand(14,22)*mult*intFactor)});
+  },
+  breachTest(S, mult){
+    const phyFactor = statFactor(S.profile.stats.physique);
+    if(Math.random() < 0.75){
+      applyDelta(S, {escapePlan: Math.round(rand(14,20)*mult*phyFactor)});
+    } else {
+      applyDelta(S, {escapePlan: -Math.round(6*mult)});
+    }
+  },
+  familyVisitDay(S, mult){
+    applyDelta(S, {family: rand(8,14)});
+  },
+  scheduleAhead(S, mult){
+    const intFactor = statFactor(S.profile.stats.intellect);
+    applyDelta(S, {evidence: Math.round(rand(5,8)*mult*intFactor)});
+  },
+  contingencyPlan(S, mult){
+    const intFactor = statFactor(S.profile.stats.intellect);
+    applyDelta(S, {evidence: Math.round(rand(7,11)*mult*intFactor), lawyer: Math.round(rand(2,4)*mult*intFactor)});
+  },
+  standOver(S, mult){
+    const phyFactor = statFactor(S.profile.stats.physique);
+    applyDelta(S, {connections: Math.round(rand(5,8)*mult*phyFactor)});
+  },
+  protectWeaker(S, mult){
+    const phyFactor = statFactor(S.profile.stats.physique);
+    applyDelta(S, {trust: Math.round(rand(5,9)*mult*phyFactor)});
+    if(Math.random() < 0.3) applyDelta(S, {escapePlan: Math.round(rand(3,6)*mult*phyFactor)});
+  },
+  laborCrew(S, mult){
+    const phyFactor = statFactor(S.profile.stats.physique);
+    applyDelta(S, {trust: Math.round(rand(6,10)*mult*phyFactor)});
+  },
+  spreadRumor(S, mult){
+    const chaFactor = statFactor(S.profile.stats.charisma);
+    applyDelta(S, {evidence: Math.round(rand(4,7)*mult*chaFactor)});
+    if(Math.random() < 0.25) applyDelta(S, {media: Math.round(rand(2,4)*mult*chaFactor)});
+  },
+  tradeFavor(S, mult){
+    const chaFactor = statFactor(S.profile.stats.charisma);
+    applyDelta(S, {connections: Math.round(rand(6,10)*mult*chaFactor)});
+  },
+  blendIn(S, mult){
+    applyDelta(S, {suspicion:-3, heat:-2});
+  },
+  overheardTip(S, mult){
+    if(Math.random() < 0.5) applyDelta(S, {evidence: Math.round(rand(3,6)*mult)});
+    else applyDelta(S, {escapePlan: Math.round(rand(3,6)*mult)});
+  },
+  nobodySuspectsMe(S, mult){
+    S.repetitionReliefUntilDay = S.day + 5;
   }
 };
 
 // ---------------------------------------------------------------------
-// Daily move pool — mirrors index.html. Base 6 always available;
-// milestone moves join permanently once unlocked; exactly one
-// profile-signature and one scenario-flavored move is available at a
-// time. Rest is always offered separately, never part of the draw.
+// Daily move pool — v2. Mirrors the same-named block in index.html.
 // ---------------------------------------------------------------------
 const ACTION_SIDE = {
   library:'just', guard:'just', letters:'just',
@@ -282,19 +528,80 @@ const ACTION_SIDE = {
   rest:'neutral',
   reviewTestimony:'just', pressStatement:'just', testBlindSpot:'esc',
   crossReferenceFiles:'just', leanOnInmate:'esc', playGuardsAgainstEachOther:'just', keepEveryoneTalking:'neutral',
-  workTheThinFile:'just', revisitTheTimeline:'just', pushBackOnTheNarrative:'just', controlTheStory:'just'
+  workTheThinFile:'just', revisitTheTimeline:'just', pushBackOnTheNarrative:'just', controlTheStory:'just',
+  studyCaseFile:'just', mapRoutines:'esc', gymTime:'neutral', infirmaryHelp:'neutral',
+  cultivateRoutine:'esc', therapySession:'neutral',
+  pushBackOnDepartment:'just', forgeRapport:'esc', mentorInmate:'just', quietWorkDetail:'neutral',
+  stashTools:'esc', disguiseWork:'esc', blackmailLite:'esc', steerCoverage:'just', publicRally:'just', whistleblowerLeak:'just',
+  breachTest:'esc', familyVisitDay:'neutral',
+  scheduleAhead:'just', contingencyPlan:'just', standOver:'esc', protectWeaker:'esc', laborCrew:'neutral',
+  spreadRumor:'just', tradeFavor:'esc', blendIn:'neutral', overheardTip:'neutral', nobodySuspectsMe:'neutral'
 };
 
-const BASE_MOVE_IDS = ['library','guard','letters','crew','scout','bribe'];
-const MILESTONE_MOVE_IDS = ['reviewTestimony','pressStatement','testBlindSpot'];
+const BASE_MOVE_IDS = ['library','guard','letters','crew','scout'];
+const ALWAYS_ON_MOVE_IDS = ['therapySession'];
+
+const CYCLE_DAYS = { easy: 35, normal: 38, hard: 42, veryhard: 48 };
+const APPEALS_ALLOWED = { easy: 1, normal: 2, hard: 3, veryhard: 3 };
+
+function scenarioDays(S){ return S.scenario ? CYCLE_DAYS[S.scenario.id] : CYCLE_DAYS.normal; }
+function scaleFactor(S){ return scenarioDays(S) / CYCLE_DAYS.veryhard; }
+function giantDiscount(S){ return (S.profile && S.profile.id === 'giant') ? 0.85 : 1.0; }
+
+const GENERAL_MOVE_IDS = [
+  'reviewTestimony','pressStatement','testBlindSpot','bribe','leanOnInmate',
+  'playGuardsAgainstEachOther','keepEveryoneTalking',
+  'studyCaseFile','mapRoutines','gymTime','infirmaryHelp','cultivateRoutine',
+  'pushBackOnDepartment','forgeRapport','mentorInmate','quietWorkDetail',
+  'stashTools','disguiseWork','blackmailLite','steerCoverage','publicRally','whistleblowerLeak',
+  'breachTest'
+];
 const MOVE_UNLOCK_CONDITIONS = {
   reviewTestimony: (S) => S.lawyer >= 25,
-  pressStatement: (S) => S.media >= 25,
-  testBlindSpot: (S) => S.escapePlan >= 40
+  pressStatement: (S) => S.media >= 20,
+  testBlindSpot: (S) => S.escapePlan >= 20,
+  bribe: (S) => S.connections >= 15,
+  leanOnInmate: (S) => S.connections >= 25,
+  playGuardsAgainstEachOther: (S) => S.connections >= 10,
+  keepEveryoneTalking: (S) => S.day >= 5,
+  studyCaseFile: (S) => S.day >= 3,
+  mapRoutines: (S) => S.day >= 3,
+  gymTime: (S) => S.day >= 3,
+  infirmaryHelp: (S) => S.family >= 10,
+  cultivateRoutine: (S) => (S.actionCounts.scout||0) >= 2,
+  pushBackOnDepartment: (S) => S.lawyer >= 18,
+  forgeRapport: (S) => S.connections >= 20,
+  mentorInmate: (S) => S.trust >= 25,
+  quietWorkDetail: (S) => S.trust >= 20 || (S.profile && S.profile.id === 'giant' && (S.actionCounts.laborCrew||0) >= 1),
+  stashTools: (S) => S.connections >= Math.round(40*scaleFactor(S)*giantDiscount(S))
+    && (S.actionCounts.bribe||0) >= 1 && S.day >= Math.round(0.35*scenarioDays(S)),
+  disguiseWork: (S) => (S.actionCounts.stashTools||0) >= 1,
+  blackmailLite: (S) => S.connections >= Math.round(35*scaleFactor(S)*giantDiscount(S)) && S.trust <= 40,
+  steerCoverage: (S) => S.media >= Math.round(40*scaleFactor(S)) && (S.actionCounts.pressStatement||0) >= 2,
+  publicRally: (S) => S.media >= Math.round(50*scaleFactor(S)) && S.day >= Math.round(0.5*scenarioDays(S)),
+  whistleblowerLeak: (S) => S.scenario && S.scenario.id === 'veryhard' && S.evidence >= 50,
+  breachTest: (S) => S.escapePlan >= 50
 };
-const PROFILE_SIGNATURE_MOVE = {
-  strategist:'crossReferenceFiles', giant:'leanOnInmate',
-  manipulator:'playGuardsAgainstEachOther', everyman:'keepEveryoneTalking'
+const PROFILE_SIGNATURE_CHAINS = {
+  strategist: [
+    { id:'scheduleAhead', cond: (S) => true },
+    { id:'crossReferenceFiles', cond: (S) => S.evidence >= 15 },
+    { id:'contingencyPlan', cond: (S) => S.day >= 10 }
+  ],
+  giant: [
+    { id:'standOver', cond: (S) => true },
+    { id:'protectWeaker', cond: (S) => S.trust >= 15 },
+    { id:'laborCrew', cond: (S) => S.day >= 8 }
+  ],
+  manipulator: [
+    { id:'spreadRumor', cond: (S) => true },
+    { id:'tradeFavor', cond: (S) => S.connections >= 15 }
+  ],
+  everyman: [
+    { id:'blendIn', cond: (S) => true },
+    { id:'overheardTip', cond: (S) => S.day >= 5 },
+    { id:'nobodySuspectsMe', cond: (S) => S.suspicion >= 30 || S.heat >= 30 }
+  ]
 };
 const SCENARIO_SIGNATURE_MOVE = {
   easy:'workTheThinFile', normal:'revisitTheTimeline',
@@ -302,25 +609,37 @@ const SCENARIO_SIGNATURE_MOVE = {
 };
 
 function checkMoveUnlocks(S){
-  for(const id of MILESTONE_MOVE_IDS){
+  for(const id of GENERAL_MOVE_IDS){
     if(!S.unlockedMoveIds.includes(id) && MOVE_UNLOCK_CONDITIONS[id](S)){
       S.unlockedMoveIds.push(id);
+    }
+  }
+  if(S.profile){
+    const chain = PROFILE_SIGNATURE_CHAINS[S.profile.id] || [];
+    for(const step of chain){
+      if(!S.unlockedMoveIds.includes(step.id) && step.cond(S)){
+        S.unlockedMoveIds.push(step.id);
+      }
     }
   }
 }
 
 function getAvailableMovePool(S){
-  const ids = [...BASE_MOVE_IDS];
-  for(const id of MILESTONE_MOVE_IDS){
+  const ids = [...BASE_MOVE_IDS, ...ALWAYS_ON_MOVE_IDS];
+  for(const id of GENERAL_MOVE_IDS){
     if(S.unlockedMoveIds.includes(id)) ids.push(id);
   }
-  if(S.profile && PROFILE_SIGNATURE_MOVE[S.profile.id]) ids.push(PROFILE_SIGNATURE_MOVE[S.profile.id]);
+  if(S.profile){
+    const chain = PROFILE_SIGNATURE_CHAINS[S.profile.id] || [];
+    for(const step of chain){
+      if(S.unlockedMoveIds.includes(step.id)) ids.push(step.id);
+    }
+  }
   if(S.scenario && SCENARIO_SIGNATURE_MOVE[S.scenario.id]) ids.push(SCENARIO_SIGNATURE_MOVE[S.scenario.id]);
+  if(S.family >= 30 && S.scenario && (S.day - (S.lastFamilyVisitDay||0)) >= 10) ids.push('familyVisitDay');
   return ids;
 }
 
-// One guaranteed Justice-side, one guaranteed Escape-side, one wildcard
-// from whatever's left — only called when a new day actually starts.
 function drawTodayMoves(S){
   const pool = getAvailableMovePool(S);
   const justicePool = pool.filter(id => ACTION_SIDE[id] === 'just');
@@ -337,10 +656,6 @@ const JUSTICE_MAX_ATTEMPTS = 3;
 const JUSTICE_COOLDOWN_DAYS = 25;
 const ESCAPE_ESCALATION_PENALTY = 8;
 
-// Mirrors CYCLE_DAYS/APPEALS_ALLOWED/checkTrialDeadline() in index.html.
-const CYCLE_DAYS = { easy: 35, normal: 38, hard: 42, veryhard: 48 };
-const APPEALS_ALLOWED = { easy: 1, normal: 2, hard: 3, veryhard: 3 };
-
 function checkTrialDeadline(S){
   if(S.over) return;
   if(S.day < S.trialDeadline) return;
@@ -354,23 +669,28 @@ function checkTrialDeadline(S){
   }
 }
 
-// Mirrors underpreparedMult() / JUSTICE_FAIL_EXTRA_DAYS_BASE in index.html —
-// see that file for the rationale.
 function underpreparedMult(chance){
   return Math.max(1, Math.min(2.5, 1 + (40 - chance) / 40 * 1.5));
 }
 const JUSTICE_FAIL_EXTRA_DAYS_BASE = 12;
 
+// Heat replaces Suspicion's old role in the Justice formula now that the
+// two stats are split by track (see index.html).
+const HEAT_CHANCE_PENALTY = 0.12;
 function computeJusticeChance(S){
   const intFactor = (S.profile.stats.intellect - 50) * 0.006;
-  const raw = 3 + S.evidence * (0.85 + intFactor) + S.pipelineBonus - S.suspicion * 0.3;
+  const raw = 3 + S.evidence * (0.85 + intFactor) + S.pipelineBonus - S.heat * HEAT_CHANCE_PENALTY;
   return Math.max(1, Math.min(95, raw));
 }
+
+const ESCAPE_SUSPICION_PENALTY = 0.2;
+const ESCAPE_SURVEILLANCE_PENALTY = 8;
 function computeEscapeChance(S){
   const physFactor = (S.profile.stats.physique - 50) * 0.006;
   const escalationMult = S.scenario ? S.scenario.security.escalationPenaltyMult : 1;
   const escalation = S.escapeAttemptsUsed * ESCAPE_ESCALATION_PENALTY * escalationMult;
-  const raw = 3 + S.escapePlan * (0.85 + physFactor) - S.suspicion * 0.35 - escalation;
+  const surveillancePenalty = S.suspicion >= 80 ? ESCAPE_SURVEILLANCE_PENALTY : 0;
+  const raw = 3 + S.escapePlan * (0.85 + physFactor) - S.suspicion * ESCAPE_SUSPICION_PENALTY - escalation - surveillancePenalty;
   return Math.max(1, Math.min(95, raw));
 }
 
@@ -381,23 +701,15 @@ function maybeRegenJusticeAttempt(S){
   }
 }
 
-function maybeEvent(S){
+function maybeEvent(S, actionId){
   if(S.scenario && S.scenario.scrutiny.tabloidEvent && rand(1,100) <= 4){
     applyDelta(S, {suspicion: rand(10,18)});
     S.pipelineBonus = Math.max(0, S.pipelineBonus - rand(1,2));
     return;
   }
+  maybeTierEvent(S, 'suspicion', actionId);
+  maybeTierEvent(S, 'heat', actionId);
   const roll = rand(1,100);
-  const threshold = S.suspicion;
-  if(roll <= threshold * 0.6){
-    const events = [
-      ()=> applyDelta(S, {suspicion:10, evidence:-3, escapePlan:-3}),
-      ()=> applyDelta(S, {suspicion:8, lawyer:-4}),
-      ()=> { S.day += rand(3,7); applyDelta(S, {suspicion:15}); }
-    ];
-    pick(events)();
-    return;
-  }
   if(roll >= 96){
     const good = [
       ()=> applyDelta(S, {lawyer:6}),
@@ -432,7 +744,8 @@ function newState(profile, scenario){
     day: 1,
     family: scenario.family.start, lawyer: 0, media: 0,
     pipelineMilestones: {}, pipelineBonus: 0,
-    connections: 15, evidence: 5, escapePlan: 5, suspicion: 10,
+    connections: 15, evidence: 5, escapePlan: 5, suspicion: 10, heat: 10, trust: 10,
+    recentActions: [], firedPatterns: {}, lastFamilyVisitDay: 0, repetitionReliefUntilDay: 0,
     over: false, ending: null,
     lastActionId: null, actionStreak: 0,
     profile, scenario,
@@ -446,6 +759,7 @@ function newState(profile, scenario){
     unlockedMoveIds: [],
     todayMoves: []
   };
+  checkMoveUnlocks(S); // day-1 profile signature moves (always-true conditions)
   drawTodayMoves(S); // day 1's offered moves
   return S;
 }
@@ -453,15 +767,19 @@ function newState(profile, scenario){
 function runAction(S, id){
   S.day += 1;
   maybeRegenJusticeAttempt(S);
-  applyDelta(S, {suspicion:2}); // ambient drift, same as chooseAction() in index.html
   if(id === S.lastActionId){ S.actionStreak += 1; } else { S.actionStreak = 1; }
   S.lastActionId = id;
-  const mult = Math.max(0.5, 1 - 0.12*(S.actionStreak-1));
+  const reliefActive = S.day <= S.repetitionReliefUntilDay;
+  const decayRate = reliefActive ? 0.06 : 0.12;
+  const decayFloor = reliefActive ? 0.75 : 0.5;
+  const mult = Math.max(decayFloor, 1 - decayRate*(S.actionStreak-1));
   S.actionCounts[id] = (S.actionCounts[id] || 0) + 1;
+  if(id === 'familyVisitDay') S.lastFamilyVisitDay = S.day;
   ACTIONS[id](S, mult);
+  applyDailySuspicionAndHeat(S, id);
   maybeGrapevineTip(S);
   maybeEvidenceChallenge(S);
-  maybeEvent(S);
+  maybeEvent(S, id);
   checkTrialDeadline(S);
   if(!S.over) drawTodayMoves(S); // a new day started — redraw the 3 offered moves
 }
@@ -515,23 +833,19 @@ function tryAttemptEscape(S){
 // slot 1), preferring a milestone/signature move over a base move when
 // more than one Justice-side option is offered that day; escape-greedy
 // mirrors that on the Escape-side (guaranteed by slot 2). Both cool off
-// when suspicion runs dangerously high, and attempt their ending once the
-// odds clear a threshold.
+// when their track's risk stat runs dangerously high, and attempt their
+// ending once the odds clear a threshold.
 //
-// The thresholds/day-caps below were grid-searched against the target win
-// rates in the task spec (see PR description) rather than picked by feel —
-// each strategy gets its own day budget because a bot that gives up on
-// Justice after ~120 days but keeps grinding Escape for ~900 is what
-// actually reproduces both columns of the target table simultaneously; a
-// single shared cap could not fit both. These bot budgets/thresholds are
-// shared across all four scenarios — only the underlying formulas differ
-// per scenario, exactly as they would for a real player.
+// v2: the justice bot now watches Heat instead of Suspicion when deciding
+// whether to rest — Suspicion no longer affects the Justice formula at
+// all now that the two tracks are split. The escape bot still watches
+// Suspicion, unchanged.
 const JUSTICE_BASE_IDS = new Set(['library','guard','letters']);
 const ESCAPE_BASE_IDS = new Set(['crew','scout','bribe']);
 
 const JUSTICE_BOT_MAX_DAYS = 120;
 const JUSTICE_BOT_ATTEMPT_THRESHOLD = 45;
-const JUSTICE_BOT_REST_SUSPICION = 55;
+const JUSTICE_BOT_REST_HEAT = 55;
 
 const ESCAPE_BOT_MAX_DAYS = 900;
 const ESCAPE_BOT_ATTEMPT_THRESHOLD = 36;
@@ -550,7 +864,7 @@ function justiceGreedyStep(S){
     tryPresentCase(S);
     return;
   }
-  if(S.suspicion >= JUSTICE_BOT_REST_SUSPICION){
+  if(S.heat >= JUSTICE_BOT_REST_HEAT){
     runAction(S, 'rest');
     return;
   }
@@ -704,13 +1018,13 @@ function printGradeReport(){
 }
 
 // ---------------------------------------------------------------------
-// Validation report for the dynamic/unlockable move pool rework — see
-// task description. Report-only: flags deviations for a human to retune,
-// never adjusts values itself.
+// Validation report — see task description ("v2 Required verification").
+// Report-only: flags deviations for a human to retune, never adjusts
+// values itself.
 // ---------------------------------------------------------------------
 
-// Last validated win-rate matrix from README.md (pre-dynamic-move-pool),
-// used as the baseline for the >~15 percentage-point shift check below.
+// Last validated win-rate matrix from README.md (pre-v2), used as the
+// baseline for the >~15 percentage-point shift check below.
 const BASELINE_WIN_RATES = {
   easy:     { strategist:{justice:99,escape:84}, giant:{justice:72,escape:99}, manipulator:{justice:98,escape:97}, everyman:{justice:97,escape:98} },
   normal:   { strategist:{justice:84,escape:17}, giant:{justice:21,escape:65}, manipulator:{justice:72,escape:17}, everyman:{justice:60,escape:56} },
@@ -720,10 +1034,156 @@ const BASELINE_WIN_RATES = {
 const WIN_RATE_SHIFT_FLAG_THRESHOLD = 15; // percentage points
 
 // Total trial-deadline budget (initial cycle + every appeal cycle) per
-// scenario — CYCLE_DAYS * (1 + APPEALS_ALLOWED) — given directly in the
-// task spec as easy 70 / normal 114 / hard 168 / veryhard 192.
+// scenario — CYCLE_DAYS * (1 + APPEALS_ALLOWED).
 const TRIAL_BUDGET_DAYS = {};
 for(const id of Object.keys(CYCLE_DAYS)) TRIAL_BUDGET_DAYS[id] = CYCLE_DAYS[id] * (1 + APPEALS_ALLOWED[id]);
+
+// ---- v2 check 1: Justice-track Tier 3 reachability ----
+// Runs a justice-greedy bot and records whether controlTheStory (Tier 3,
+// renamed steerCoverage to avoid an id collision with the existing
+// veryhard scenario-signature move) and publicRally ever actually unlock
+// before the bot's run ends, across all 16 profile x scenario combos.
+function checkTier3JusticeReachability(){
+  const N = 150;
+  console.log(`\n=== v2 check 1: Justice Tier 3 reachability (steerCoverage / publicRally), ${N} runs per combo ===`);
+  let anyLow = false;
+  for(const scenario of SCENARIOS){
+    for(const profile of PROFILES){
+      let steerCount = 0, rallyCount = 0;
+      for(let i=0;i<N;i++){
+        const S = simulateOneState(profile.id, scenario.id, 'justice');
+        if(S.unlockedMoveIds.includes('steerCoverage')) steerCount += 1;
+        if(S.unlockedMoveIds.includes('publicRally')) rallyCount += 1;
+      }
+      const steerPct = (steerCount/N*100).toFixed(0), rallyPct = (rallyCount/N*100).toFixed(0);
+      const flag = (steerCount === 0 && rallyCount === 0) ? '  FLAG (neither ever reached)' : '';
+      if(flag) anyLow = true;
+      console.log(`  ${scenario.id.padEnd(9)}${profile.name.padEnd(16)} steerCoverage=${steerPct}%  publicRally=${rallyPct}%${flag}`);
+    }
+  }
+  if(!anyLow) console.log('  none — every combo reaches at least one Justice Tier 3 move at least once.');
+}
+
+// ---- v2 check 2: quiet/patient Escape win rate ----
+// A "quiet" bot strategy: only takes Escape-track footprint moves when
+// Suspicion is comfortably low, otherwise prefers Rest/neutral filler —
+// i.e. optimizes for staying under the radar, not just raw Escape Plan
+// speed. Checks whether it can still reach Escape Plan >= 70 (the
+// existing attempt-worthy threshold referenced in the task) at a healthy
+// rate within each scenario's day budget.
+const QUIET_ESCAPE_BOT_MAX_DAYS = 900;
+const QUIET_SUSPICION_CEILING = 45; // stays well under the "Watched" tier (40-59)
+const QUIET_ATTEMPT_ESCAPE_PLAN = 70;
+
+function quietEscapeStep(S){
+  if(S.escapePlan >= QUIET_ATTEMPT_ESCAPE_PLAN && computeEscapeChance(S) >= ESCAPE_BOT_ATTEMPT_THRESHOLD){
+    tryAttemptEscape(S);
+    return;
+  }
+  if(S.suspicion >= QUIET_SUSPICION_CEILING){
+    runAction(S, 'rest');
+    return;
+  }
+  const escapeOptions = S.todayMoves.filter(id => ACTION_SIDE[id] === 'esc');
+  if(escapeOptions.length > 0){
+    runAction(S, pickPreferred(escapeOptions, ESCAPE_BASE_IDS));
+  } else {
+    runAction(S, 'rest');
+  }
+}
+
+function checkQuietEscapeViability(){
+  const N = 150;
+  console.log(`\n=== v2 check 2: quiet/patient Escape viability (Suspicion held < ${QUIET_SUSPICION_CEILING}), ${N} runs per combo ===`);
+  let anyZero = false;
+  for(const scenario of SCENARIOS){
+    for(const profile of PROFILES){
+      let winCount = 0, avgSuspicionAtWinSum = 0;
+      for(let i=0;i<N;i++){
+        const profileObj = PROFILES.find(p=>p.id===profile.id);
+        const scenarioObj = SCENARIOS.find(s=>s.id===scenario.id);
+        const S = newState(profileObj, scenarioObj);
+        while(!S.over && S.day < QUIET_ESCAPE_BOT_MAX_DAYS){
+          quietEscapeStep(S);
+        }
+        if(S.ending === 'escape-win'){ winCount += 1; avgSuspicionAtWinSum += S.suspicion; }
+      }
+      const winPct = (winCount/N*100).toFixed(0);
+      const avgSusp = winCount ? (avgSuspicionAtWinSum/winCount).toFixed(0) : '—';
+      const flag = winCount === 0 ? '  FLAG (0% quiet-play win rate)' : (winCount/N < 0.2 ? '  FLAG (<20% quiet-play win rate)' : '');
+      if(flag) anyZero = true;
+      console.log(`  ${scenario.id.padEnd(9)}${profile.name.padEnd(16)} winRate=${winPct}%  avgSuspicionAtWin=${avgSusp}${flag}`);
+    }
+  }
+  if(!anyZero) console.log('  none — quiet/patient play clears 20% Escape win rate in every combo.');
+}
+
+// ---------------------------------------------------------------------
+// v2 follow-up check: loud vs. paced Justice play. Follow-up bug report —
+// a player who greedily takes whichever offered Justice move LOOKS like
+// the biggest Evidence gain (the natural reading of each move's own
+// description, ignoring Heat entirely) used to see repeated Heat moves
+// compound via repMult/trialProximityMult into the 95-100 Heat tier fast,
+// whose consequence used to also drain Evidence directly — stacking with
+// the independent maybeEvidenceChallenge() mechanic on the same stat.
+// EVIDENCE_RANK approximates "what a player reading descriptions would
+// judge as the biggest Evidence move that day" (nominal average of each
+// move's own rand() range) — not the real stat-scaled amount, since a
+// player choosing moves doesn't know profile-factor math either.
+// ---------------------------------------------------------------------
+const EVIDENCE_RANK = {
+  library:6, letters:8.5, reviewTestimony:9.5, studyCaseFile:7,
+  pushBackOnDepartment:10.5, pressStatement:12, mentorInmate:4.5,
+  scheduleAhead:6.5, contingencyPlan:9, spreadRumor:5.5, steerCoverage:11.5,
+  whistleblowerLeak:18, controlTheStory:12.5, keepEveryoneTalking:4
+};
+const LOUD_HEAT_BACKOFF = 45; // "paced" bot backs off Heat moves above this
+
+function loudJusticeStep(S, paced){
+  const justiceOptions = S.todayMoves.filter(id => ACTION_SIDE[id] === 'just');
+  let candidates = justiceOptions;
+  if(paced && S.heat >= LOUD_HEAT_BACKOFF){
+    const nonHeat = justiceOptions.filter(id => FOOTPRINT_HEAT[id] == null);
+    if(nonHeat.length > 0) candidates = nonHeat;
+  }
+  if(candidates.length === 0){ runAction(S, 'rest'); return; }
+  let best = candidates[0], bestRank = EVIDENCE_RANK[best] || 0;
+  for(const id of candidates){
+    const rank = EVIDENCE_RANK[id] || 0;
+    if(rank > bestRank){ best = id; bestRank = rank; }
+  }
+  runAction(S, best);
+}
+
+const LOUD_JUSTICE_DAYS = 30; // a realistic "most of a game" horizon, no attempts — isolates end-state chance
+
+function checkLoudJusticeChance(){
+  const N = 100;
+  console.log(`\n=== v2 follow-up check: loud vs. paced Justice play, end-of-game chance after ${LOUD_JUSTICE_DAYS} days, ${N} runs per combo ===`);
+  let anyCollapse = false;
+  for(const scenario of SCENARIOS){
+    for(const profile of PROFILES){
+      let loudChanceSum = 0, pacedChanceSum = 0, loudHeatSum = 0, pacedHeatSum = 0;
+      for(let i=0;i<N;i++){
+        const Sloud = newState(profile, scenario);
+        for(let d=0; d<LOUD_JUSTICE_DAYS && !Sloud.over; d++) loudJusticeStep(Sloud, false);
+        loudChanceSum += computeJusticeChance(Sloud);
+        loudHeatSum += Sloud.heat;
+
+        const Spaced = newState(profile, scenario);
+        for(let d=0; d<LOUD_JUSTICE_DAYS && !Spaced.over; d++) loudJusticeStep(Spaced, true);
+        pacedChanceSum += computeJusticeChance(Spaced);
+        pacedHeatSum += Spaced.heat;
+      }
+      const loudChance = (loudChanceSum/N).toFixed(1), pacedChance = (pacedChanceSum/N).toFixed(1);
+      const loudHeat = (loudHeatSum/N).toFixed(0), pacedHeat = (pacedHeatSum/N).toFixed(0);
+      const flag = loudChanceSum/N < 50 ? '  FLAG (loud play collapses below 50% chance)' : '';
+      if(flag) anyCollapse = true;
+      console.log(`  ${scenario.id.padEnd(9)}${profile.name.padEnd(16)} loud: chance=${loudChance.padStart(5)} heat=${loudHeat.padStart(3)}   paced: chance=${pacedChance.padStart(5)} heat=${pacedHeat.padStart(3)}${flag}`);
+    }
+  }
+  if(!anyCollapse) console.log('  none — loud (naive highest-Evidence) Justice play stays at or above 50% end-of-game chance in every combo.');
+}
 
 function main(){
   const N = 400;
@@ -789,6 +1249,15 @@ function main(){
   }
 
   printGradeReport();
+
+  checkTier3JusticeReachability();
+  checkQuietEscapeViability();
+  checkLoudJusticeChance();
+
+  // ---- v2 regression check: Very Hard / Strategist / Escape Elite ----
+  console.log(`\n=== v2 regression check: Very Hard / Strategist / Escape reachability (known-fragile combo) ===`);
+  const vhStratEscape = results.find(r => r.scenarioId==='veryhard' && r.profileId==='strategist' && r.strategy==='escape');
+  console.log(`  Very Hard Strategist Escape win% = ${vhStratEscape.winPct.toFixed(1)}% (baseline was ~0%, expected to remain low but should not have regressed further / gone fully unreachable in a way that differs qualitatively from baseline)`);
 }
 
 if(require.main === module) main();
