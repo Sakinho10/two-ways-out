@@ -537,6 +537,131 @@ Verify with:
 node sim/pipeline_sim.js
 ```
 
+## v2 follow-up: per-scenario Justice chance ceiling (still open — real root cause identified)
+
+Direct attempt at the ceiling finding, per the fork the previous follow-up already
+flagged: instead of continuing to throttle the *inputs* that feed
+`computeJusticeChance()` (Evidence growth, already throttled by
+`evidenceMult`), this caps the *output* itself. Added `scrutiny.justiceChanceCeiling`
+per scenario (easy 95, normal 95, hard 72, veryhard 58 — unchanged at
+Easy/Normal, well below the old flat 95 at Hard/Very Hard) and replaced the
+hardcoded `95` in `computeJusticeChance()`'s clamp with it. Mirrored into
+`sim/pipeline_sim.js`. `CYCLE_DAYS`/`APPEALS_ALLOWED` are untouched, per the
+explicit brief for this fix.
+
+**Result: the ceiling works correctly in isolation but does not close the
+win-rate gap.** 400-run Justice win% before → after:
+
+| Scenario | Profile | Before | After |
+|---|---|---|---|
+| Easy | Strategist | 99.5% | 99.3% |
+| Easy | Gentle Giant | 96.8% | 95.5% |
+| Easy | Manipulator | 100.0% | 100.0% |
+| Easy | Everyman | 99.3% | 99.3% |
+| Normal | Strategist | 100.0% | 100.0% |
+| Normal | Gentle Giant | 98.5% | 99.0% |
+| Normal | Manipulator | 100.0% | 100.0% |
+| Normal | Everyman | 99.8% | 99.8% |
+| Hard | Strategist | 100.0% | 100.0% |
+| Hard | Gentle Giant | 97.8% | 98.0% |
+| Hard | Manipulator | 100.0% | 99.5% |
+| Hard | Everyman | 99.8% | 99.3% |
+| Very Hard | Strategist | 99.5% | 99.5% |
+| Very Hard | Gentle Giant | 87.5% | 87.3% |
+| Very Hard | Manipulator | 99.0% | 97.5% |
+| Very Hard | Everyman | 93.8% | 95.8% |
+
+Easy/Normal are flat, as intended (`justiceChanceCeiling` is unchanged there).
+But Hard and Very Hard are also flat, within simulation noise, despite a
+ceiling dropped from 95 to 72/58 — the required verification target ("Hard
+and Very Hard now land meaningfully below 95%") **is not met.**
+
+**Root cause, precisely identified:** the ceiling bounds a single attempt's
+chance correctly — confirmed directly via `checkLoudJusticeChance()`, where
+end-of-game chance on Very Hard clamps at exactly `58.0` for every profile,
+never above it. But the win-rate table's bot (and an equally impatient human
+player) doesn't attempt near the ceiling at all. It fires as soon as chance
+crosses `JUSTICE_BOT_ATTEMPT_THRESHOLD` (45), and a direct measurement of
+chance *at the moment of first attempt* comes out to **~45-53% on every
+single scenario, Easy through Very Hard** — the 72/58 ceiling never even
+enters the picture for a first attempt, because the bot's own impatience
+caps it first. `JUSTICE_MAX_ATTEMPTS` (3) plus cooldown-based attempt
+regeneration then let a persistent bot re-roll: three independent tries at
+~50% each compound to `1-0.5³ ≈ 87.5%`, matching the observed range almost
+exactly. A distribution of `S.justiceAttemptsUsed` at win (prior *failed*
+attempts, 300 runs/combo) confirms only **~44-53% of wins are first-attempt**
+on Hard/Very Hard — the rest come from 1-5 retries. Unlike Escape's
+`ESCAPE_ESCALATION_PENALTY`, a failed Justice attempt costs days and a
+temporary Evidence dip but adds to `suspicion`, not `heat` — the only stat
+`computeJusticeChance()` actually subtracts — so nothing suppresses the next
+attempt's odds either.
+
+This means the *ceiling* fix and the *evidence-throttle* fix before it have
+both, independently, correctly done what they set out to do — and neither
+closes the gap, because neither touches the actual dominant mechanism:
+uncapped, unpenalized attempt regeneration. This was flagged as an option in
+the original root-cause finding and set aside here on the stated premise
+that "most Justice wins land on first attempt" — that premise does not hold
+under measurement (only ~44-53% do on Hard/Very Hard); an escalation-style
+mechanic mirroring Escape's, or a scenario-scaled reduction in
+`JUSTICE_MAX_ATTEMPTS`/regeneration, is the real next step and was kept out
+of scope for this PR per its own brief. Following this project's convention
+(report deviations, don't silently patch), that gap is documented here
+rather than smoothed over.
+
+**Checks 2-4, run against the ceiling exactly as shipped:**
+
+- **Loud-play Heat trap** (`checkLoudJusticeChance()`, 100 runs/combo): no
+  collapse — range is **57.3-95.0%** end-of-game chance across all 16
+  combos, comfortably above the 50% floor. A lower achievable ceiling
+  stacking with Heat friction was flagged as a new interaction worth
+  re-checking, not assuming — it does not reopen the trap; Very Hard chance
+  simply saturates at the 58 ceiling regardless of play style (loud and
+  paced both land at 58.0 for 3 of 4 profiles).
+- **Strategist Justice Tier 3 reachability** (`checkTier3JusticeReachability()`,
+  150 runs/combo): Strategist hit 0% (FLAG) for Normal and Hard this run,
+  matching the pre-existing 0%/2%/3%-range noise already on record from the
+  prior follow-up at this same N=150 — not a new regression. A lower ceiling
+  means more failed attempts before winning (see the attempt distribution
+  above), which if anything gives Media slightly more days to accumulate;
+  it did not measurably change Tier 3 reachability in either direction.
+- **Patient/cautious Justice viability under the real day budget** (new
+  check, `checkQuietJusticeViability()`, 150 runs/combo): a bot that never
+  touches a Heat-generating move and only attempts once its chance is
+  within 10 points of the scenario's own ceiling, run under the real
+  `trialDeadline`/appeals mechanics (not an artificial day cap). **14 of 16
+  combos pass cleanly, most at 95-100% win rate.** Two flag low: Gentle
+  Giant/Easy (17-27% across reruns, 73-83% running out of the day budget)
+  and, less severely, Gentle Giant/Normal (67-73%, still clears the 20%
+  floor). Both reproduce identically on Easy/Normal, where
+  `justiceChanceCeiling` is unchanged at 95 — confirming this is **not**
+  day-budget pressure introduced by this fix, but a pre-existing property
+  of Gentle Giant's low Intellect stat (weak Evidence-to-chance conversion)
+  combined with this check's own strict bar (near-ceiling confidence *and*
+  zero Heat). The fix itself introduces no new day-budget pressure on any
+  combo where the ceiling actually changed (Hard/Very Hard all clear
+  93-100%).
+
+**`confidenceLabel()` left unchanged, deliberately.** Its bands are
+absolute (`airtight` ≥80, `solid` ≥62, …) and shared by both
+`computeJusticeChance()` and `computeEscapeChance()`. With the new
+ceiling, `airtight` is now unreachable for Justice on Hard (cap 72) and
+both `solid` and `airtight` are unreachable on Very Hard (cap 58) — the
+best a Very Hard case can ever read is `decent`. That reads as correct
+rather than broken: a case against killing a senator shouldn't ever feel
+airtight, and the four bands below `airtight` still give full granularity
+within Very Hard's reachable range. Rebanding per-scenario would also mean
+diverging the label scale from Escape's (unaffected by this fix, no
+ceiling change), which would make the same label mean different things on
+the two paths shown side by side on the same screen — a worse outcome than
+a label the player learns tops out lower on the harder cases.
+
+Verify with:
+
+```
+node sim/pipeline_sim.js
+```
+
 ## Known Gaps
 
 | Item | Status |
@@ -547,5 +672,5 @@ node sim/pipeline_sim.js
 | No day/attempt-cost mechanics — Justice was gated by a flat day floor, and neither ending's fail penalty scaled with confidence or repeat attempts | Done — `MIN_JUSTICE_DAY` removed, attempts spend their own day, and fail penalties scale via `underpreparedMult()` plus scaled fail day-costs, described above |
 | No grading/ranking on the ending screen | Done — `computeGrade()` produces a letter grade, raw score, generated comment, and Elite badge, described above |
 | Single Suspicion stat rose regardless of play style and went inert past a flat 3-event pool; move pool felt repetitive across playthroughs | Done (v2) — split into Suspicion (Escape)/Heat (Justice), each footprint-driven and decaying, plus a tier ladder and ~28 new moves across earned-through-play gates — see "Suspicion & Heat" and "Expanded move pool" above |
-| v2: Justice win rate is now inflated (often 95-100%) across most profile x scenario combos, and Strategist rarely lingers long enough to reach Justice Tier 3 content | Partially addressed (v2 follow-up) — `evidenceMult` scenario throttle added, mirroring `escapePlanMult`, but verified **insufficient alone**: Hard/Very Hard mostly stay in the 95-100% band. Root cause updated — see "v2 follow-up: scenario-throttle Evidence gain" below; still needs a Justice-side repeat-attempt escalation mechanic (the other half of the original root-cause finding) to actually close the gap |
+| v2: Justice win rate is now inflated (often 95-100%) across most profile x scenario combos, and Strategist rarely lingers long enough to reach Justice Tier 3 content | Still open (two follow-ups so far) — `evidenceMult` (input throttle) and `justiceChanceCeiling` (output cap, well below the old flat 95 on Hard/Very Hard) are both shipped and both verified **individually correct but jointly insufficient**: Hard/Very Hard stay at 87-100%. Root cause now precisely identified — see "v2 follow-up: per-scenario Justice chance ceiling" below: uncapped, unpenalized attempt regeneration (`JUSTICE_MAX_ATTEMPTS` + cooldown regen, no chance-formula penalty on failure) lets ~3 retries at ~50% each compound back to ~87%+ regardless of any single-attempt cap. That mechanic is the actual next fix and was kept out of scope for both follow-ups so far |
 | v2: loud/naive Justice play (always taking the highest-apparent-Evidence move) could collapse to single-digit win chance by end of game — two systems (top Heat tier + `maybeEvidenceChallenge()`) independently drained Evidence at once, and `controlTheStory` still wrote to the wrong (Escape-track) stat | Done (v2 follow-up) — see "v2 follow-up: loud-play Heat trap" above |
