@@ -1675,9 +1675,25 @@ function drawTodayMoves(){
 // parole/appeal systems actually work (you don't get to reapply the next
 // day). Justice has no "no floor" instruction like Escape does below —
 // attempts always eventually regenerate, so a patient player is never
-// permanently locked out, only slowed down.
+// permanently locked out, only slowed down — but each prior failed hearing
+// now also costs chance directly (see JUSTICE_ESCALATION_PENALTY below), so
+// regeneration buys another try, not another try at the same odds.
+//
+// v2 follow-up: a scenario-scaled version of this (fewer hearings on
+// Hard/Very Hard, mirroring APPEALS_ALLOWED) was tried alongside the
+// escalation penalty and measured to give no additional benefit — see
+// README "Justice attempt escalation penalty" for the result and the
+// cooldown-regeneration interaction that explains it. Reverted; kept flat.
 const JUSTICE_MAX_ATTEMPTS = 3;
 const JUSTICE_COOLDOWN_DAYS = 25;
+
+// v2 follow-up: mirrors ESCAPE_ESCALATION_PENALTY below — a failed hearing
+// used to cost only days and a temporary Evidence dip, with nothing in
+// computeJusticeChance() itself remembering it happened. That let attempt
+// regeneration compound ~3 independent tries at ~50% each back up to ~87%+
+// regardless of any single-attempt ceiling. This penalty makes each
+// subsequent hearing genuinely harder, not just slower.
+const JUSTICE_ESCALATION_PENALTY = 15; // chance points lost per prior failed hearing
 
 // Escape: unlimited attempts, but each failure makes the NEXT one harder —
 // guards learn your patterns. Deliberately has no floor: per explicit
@@ -1737,7 +1753,8 @@ const HEAT_CHANCE_PENALTY = 0.12;
 
 function computeJusticeChance(){
   const intFactor = (S.profile.stats.intellect - 50) * 0.006;
-  const raw = 3 + S.evidence * (0.85 + intFactor) + S.pipelineBonus - S.heat * HEAT_CHANCE_PENALTY;
+  const escalation = S.justiceAttemptsUsed * JUSTICE_ESCALATION_PENALTY;
+  const raw = 3 + S.evidence * (0.85 + intFactor) + S.pipelineBonus - S.heat * HEAT_CHANCE_PENALTY - escalation;
   const ceiling = S.scenario ? S.scenario.scrutiny.justiceChanceCeiling : 95;
   return Math.max(1, Math.min(ceiling, raw));
 }
@@ -1892,8 +1909,8 @@ function tryPresentCase(){
     applyDelta({suspicion:Math.round(10*mult), evidence:-Math.round(10*mult)});
     const remaining = S.justiceAttemptsLeft;
     const remainingNote = remaining > 0
-      ? `You have ${remaining} hearing${remaining===1?'':'s'} left before you'll need to wait out a new one.`
-      : `That was your last scheduled hearing for now — the board won't see you again for a while.`;
+      ? `You have ${remaining} hearing${remaining===1?'':'s'} left before you'll need to wait out a new one, and the board will be less receptive next time.`
+      : `That was your last scheduled hearing for now — the board won't see you again for a while, and it'll remember this denial when you do come back.`;
     S.log = `The parole board reads your file, glances at the disciplinary notes sitting beside your appeal, and denies it in four minutes flat. "Insufficient corroboration," the letter says. It costs you ${extraDays} day${extraDays===1?'':'s'} of stalled paperwork on top of today. ${remainingNote}`;
     checkTrialDeadline();
     if(!S.over) drawTodayMoves(); // a new day started — redraw the 3 offered moves
