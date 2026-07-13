@@ -659,6 +659,7 @@ function drawTodayMoves(S){
 const JUSTICE_MAX_ATTEMPTS = 3;
 const JUSTICE_COOLDOWN_DAYS = 25;
 const ESCAPE_ESCALATION_PENALTY = 8;
+const JUSTICE_ESCALATION_PENALTY = 15; // mirrors index.html — chance points lost per prior failed hearing
 
 function checkTrialDeadline(S){
   if(S.over) return;
@@ -683,7 +684,8 @@ const JUSTICE_FAIL_EXTRA_DAYS_BASE = 12;
 const HEAT_CHANCE_PENALTY = 0.12;
 function computeJusticeChance(S){
   const intFactor = (S.profile.stats.intellect - 50) * 0.006;
-  const raw = 3 + S.evidence * (0.85 + intFactor) + S.pipelineBonus - S.heat * HEAT_CHANCE_PENALTY;
+  const escalation = S.justiceAttemptsUsed * JUSTICE_ESCALATION_PENALTY;
+  const raw = 3 + S.evidence * (0.85 + intFactor) + S.pipelineBonus - S.heat * HEAT_CHANCE_PENALTY - escalation;
   const ceiling = S.scenario ? S.scenario.scrutiny.justiceChanceCeiling : 95;
   return Math.max(1, Math.min(ceiling, raw));
 }
@@ -1253,6 +1255,35 @@ function checkLoudJusticeChance(){
   if(!anyCollapse) console.log('  none — loud (naive highest-Evidence) Justice play stays at or above 50% end-of-game chance in every combo.');
 }
 
+// ---------------------------------------------------------------------
+// v2 follow-up check: Justice attempt-distribution at win. The same
+// measurement that originally diagnosed the attempt-regeneration problem
+// (see README "per-scenario Justice chance ceiling" follow-up) — re-run
+// here against JUSTICE_ESCALATION_PENALTY to confirm the share of
+// multi-attempt wins on Hard/Very Hard has actually dropped, not just that
+// the headline win rate moved for some other reason.
+// ---------------------------------------------------------------------
+const ATTEMPT_DIST_N = 300;
+
+function checkJusticeAttemptDistribution(){
+  console.log(`\n=== v2 follow-up check: Justice attempt-distribution at win (${ATTEMPT_DIST_N} runs/combo) ===`);
+  for(const scenario of SCENARIOS){
+    for(const profile of PROFILES){
+      const hist = {};
+      let winCount = 0;
+      for(let i=0;i<ATTEMPT_DIST_N;i++){
+        const S = simulateOneState(profile.id, scenario.id, 'justice');
+        if(S.ending !== 'justice-win') continue;
+        winCount += 1;
+        hist[S.justiceAttemptsUsed] = (hist[S.justiceAttemptsUsed]||0) + 1;
+      }
+      const firstAttemptPct = winCount ? (100*(hist[0]||0)/winCount).toFixed(0) : '—';
+      const distStr = Object.keys(hist).sort((a,b)=>a-b).map(k=>`${k}:${hist[k]}`).join(' ');
+      console.log(`  ${scenario.id.padEnd(9)}${profile.name.padEnd(16)} wins=${String(winCount).padEnd(4)} firstAttempt%=${firstAttemptPct.padStart(3)}  [${distStr}]`);
+    }
+  }
+}
+
 function main(){
   const N = 400;
   console.log(`Simulating ${N} playthroughs per profile x scenario x strategy (justice-greedy, escape-greedy)...\n`);
@@ -1322,6 +1353,7 @@ function main(){
   checkQuietEscapeViability();
   checkQuietJusticeViability();
   checkLoudJusticeChance();
+  checkJusticeAttemptDistribution();
 
   // ---- v2 regression check: Very Hard / Strategist / Escape Elite ----
   console.log(`\n=== v2 regression check: Very Hard / Strategist / Escape reachability (known-fragile combo) ===`);

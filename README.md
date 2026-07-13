@@ -662,6 +662,155 @@ Verify with:
 node sim/pipeline_sim.js
 ```
 
+## v2 follow-up: Justice attempt escalation penalty (meaningful progress, not fully closed)
+
+Direct attempt at the real root cause the previous follow-up precisely
+identified: uncapped, unpenalized attempt regeneration. A failed Justice
+attempt already cost days (`JUSTICE_FAIL_EXTRA_DAYS_BASE`) and a temporary
+Evidence dip, but added to `suspicion`, not `heat` — the only stat
+`computeJusticeChance()` actually subtracts — so nothing suppressed the
+next attempt's odds. `JUSTICE_MAX_ATTEMPTS` (3) plus cooldown-based
+regeneration then let ~3 independent tries at ~50% each compound back to
+~87%+ regardless of any single-attempt ceiling.
+
+Added `JUSTICE_ESCALATION_PENALTY = 15` and a `S.justiceAttemptsUsed *
+JUSTICE_ESCALATION_PENALTY` term subtracted directly in
+`computeJusticeChance()`, mirroring the `S.escapeAttemptsUsed *
+ESCAPE_ESCALATION_PENALTY` term `computeEscapeChance()` already had.
+Mirrored into `sim/pipeline_sim.js`. Also updated the parole-board denial
+text in `tryPresentCase()`'s fail branch to say the board will be "less
+receptive next time" — a repeat hearing is now genuinely harder, not just
+slower, matching how Escape's fail text already signals this.
+`CYCLE_DAYS`/`APPEALS_ALLOWED`/`justiceChanceCeiling` untouched, per this
+fix's scope.
+
+**Result: real movement, especially for Gentle Giant/Everyman, but
+Strategist/Manipulator still land ≥90% on Hard/Very Hard.** 400-run Justice
+win% before → after:
+
+| Scenario | Profile | Before | After |
+|---|---|---|---|
+| Easy | Strategist | 99.8% | 95.0% |
+| Easy | Gentle Giant | 96.5% | 83.5% |
+| Easy | Manipulator | 98.8% | 97.0% |
+| Easy | Everyman | 97.5% | 91.5% |
+| Normal | Strategist | 100.0% | 98.0% |
+| Normal | Gentle Giant | 99.0% | 84.3% |
+| Normal | Manipulator | 100.0% | 95.3% |
+| Normal | Everyman | 100.0% | 93.0% |
+| Hard | Strategist | 100.0% | 96.5% |
+| Hard | Gentle Giant | 97.5% | 79.5% |
+| Hard | Manipulator | 99.0% | 94.3% |
+| Hard | Everyman | 100.0% | 89.0% |
+| Very Hard | Strategist | 98.8% | 95.0% |
+| Very Hard | Gentle Giant | 86.5% | 64.0% |
+| Very Hard | Manipulator | 97.3% | 90.5% |
+| Very Hard | Everyman | 96.3% | 79.5% |
+
+The Hard/Very Hard range widens substantially (was 86.5-100%, now
+64.0-96.5%) and the bottom end drops well clear of the old band — Gentle
+Giant falls 15-22pp on Hard/Very Hard, Everyman 7-11pp. But Strategist and
+Manipulator only move 3-8pp on Hard/Very Hard and stay at 89.0-96.5%,
+still inside the "inflated" band the task set out to fix. Honestly
+reported per this project's convention rather than tuned further: a flat
+15-point penalty is not, by itself, sufficient for the two
+high-Intellect profiles.
+
+**Why Strategist/Manipulator resist this more than Gentle Giant/Everyman:**
+`computeJusticeChance()`'s Intellect factor makes their Evidence-to-chance
+conversion fast enough that they typically clear the ceiling-adjacent
+attempt threshold within 1-2 retries regardless of a flat -15/attempt
+term — the penalty shaves points off an already-high number, it doesn't
+change how many retries are available. Gentle Giant/Everyman convert
+Evidence to chance more slowly, so the same flat penalty compounds against
+more retries before they clear the bar, producing a much bigger effect.
+
+**Second, clearly-labeled experiment: scenario-scaled `JUSTICE_MAX_ATTEMPTS`
+(tried, reverted — no measurable benefit).** Per the task's own suggested
+secondary lever, `JUSTICE_MAX_ATTEMPTS` was temporarily changed from a flat
+`3` to `{ easy: 3, normal: 3, hard: 2, veryhard: 2 }`, mirroring how
+`APPEALS_ALLOWED` already scales down on harder scenarios, and run
+alongside the escalation penalty. Result: no detectable improvement.
+Hard/Very Hard win% with both changes combined (e.g. Very Hard Strategist
+93.8%, Very Hard Manipulator falls within the same 88-91% band already seen
+run-to-run) sat inside the noise band already produced by the escalation
+penalty alone across repeated 400-run samples (Very Hard Strategist alone
+ranged 90.3-95.0% run-to-run with no other change). **Root cause of why it
+doesn't help:** `JUSTICE_BOT_MAX_DAYS` (120) comfortably exceeds
+`JUSTICE_COOLDOWN_DAYS` (25) several times over, so capping *burst*
+attempts at 2 instead of 3 doesn't cap *lifetime* attempts available within
+the bot's day budget — cooldown regeneration just lets it wait out the
+gap and come back for more, pacing retries rather than actually limiting
+them. This is a real, structural reason a scenario-scaled attempt cap
+doesn't compound the same way `APPEALS_ALLOWED` does for the trial
+deadline (which has no equivalent regeneration). Reverted rather than
+shipped, since it adds a second lever and code path for no measured
+benefit — following the same "report, don't silently ship what doesn't
+help" convention as the primary result above.
+
+**Attempt-distribution check** (the same measurement that originally
+diagnosed this problem, now added to the harness as
+`checkJusticeAttemptDistribution()`, 300 runs/combo) — first-attempt share
+of wins, Hard/Very Hard, before → after:
+
+| Scenario | Profile | Before firstAttempt% | After firstAttempt% |
+|---|---|---|---|
+| Hard | Strategist | 50% | 48% |
+| Hard | Gentle Giant | 49% | 61% |
+| Hard | Manipulator | 53% | 52% |
+| Hard | Everyman | 49% | 58% |
+| Very Hard | Strategist | 42% | 51% |
+| Very Hard | Gentle Giant | 54% | 69% |
+| Very Hard | Manipulator | 51% | 58% |
+| Very Hard | Everyman | 54% | 59% |
+
+Average first-attempt share across these 8 combos rises from ~50% to
+~57% — a genuine, measurable reduction in how much of the win rate comes
+from compounding retries, confirming the fix is doing what it targets even
+where the headline win% didn't drop below 90%. The reduction concentrates
+in Gentle Giant/Everyman (matching the win-rate table above); Strategist's
+Hard first-attempt share is flat (50%→48%) — consistent with the
+"resists more" explanation above, since a profile that reliably clears the
+bar on attempt 1 or 2 regardless of the penalty won't show a first-attempt
+shift even as its headline win% dips slightly. The distribution's upper
+tail also thins post-fix (Very Hard Strategist's 5-attempt bucket, present
+pre-fix, is gone; its 4-attempt bucket drops to a single win in 300 runs)
+— fewer wins now depend on grinding out 4-5 retries.
+
+**Checks 3-5, re-verified against the shipped escalation penalty:**
+
+- **Loud-play Heat trap** (`checkLoudJusticeChance()`, 100 runs/combo):
+  trivially unaffected, as expected — this bot never calls
+  `tryPresentCase()`, so `S.justiceAttemptsUsed` stays 0 throughout and the
+  new escalation term is always 0. Worst case (Very Hard/Gentle Giant)
+  moves from 56.0-57.1% end-of-game chance across before/after runs,
+  comfortably within existing run-to-run noise and clear of the 50% floor.
+- **Strategist Justice Tier 3 reachability**
+  (`checkTier3JusticeReachability()`, 150 runs/combo): before this fix,
+  Strategist read 1%/0% (Easy), 1%/1% (Normal), 0%/0% FLAG (Hard), 4%/5%
+  (Very Hard); after, 0%/1% (Easy), 0%/0% FLAG (Normal), 4%/3% (Hard),
+  7%/5% (Very Hard). The flagged scenario shifts from Hard to Normal
+  between runs — the same single-digit, run-to-run noise already on record
+  from the prior follow-up at this N — not a regression. More failed
+  attempts before a win (this fix's whole point) does mean marginally more
+  days for Media to accumulate, but it did not measurably change Tier 3
+  reachability outside the pre-existing near-zero band.
+- **Patient/cautious Justice viability** (`checkQuietJusticeViability()`,
+  150 runs/combo): Gentle Giant/Easy and Gentle Giant/Normal, the two
+  combos flagged in the prior follow-up, move from 26%/73% (this run's
+  clean pre-fix baseline) to 18%/74% — both sit inside the 17-27% /
+  67-73% noise range already documented for these combos, confirming they
+  are unchanged by this fix. Expected: the quiet-Justice bot only attempts
+  once within `QUIET_JUSTICE_CHANCE_MARGIN` of the scenario's ceiling, so a
+  near-ceiling-confidence quiet build essentially never fails-and-retries
+  the way this fix targets.
+
+Verify with:
+
+```
+node sim/pipeline_sim.js
+```
+
 ## Known Gaps
 
 | Item | Status |
@@ -672,5 +821,5 @@ node sim/pipeline_sim.js
 | No day/attempt-cost mechanics — Justice was gated by a flat day floor, and neither ending's fail penalty scaled with confidence or repeat attempts | Done — `MIN_JUSTICE_DAY` removed, attempts spend their own day, and fail penalties scale via `underpreparedMult()` plus scaled fail day-costs, described above |
 | No grading/ranking on the ending screen | Done — `computeGrade()` produces a letter grade, raw score, generated comment, and Elite badge, described above |
 | Single Suspicion stat rose regardless of play style and went inert past a flat 3-event pool; move pool felt repetitive across playthroughs | Done (v2) — split into Suspicion (Escape)/Heat (Justice), each footprint-driven and decaying, plus a tier ladder and ~28 new moves across earned-through-play gates — see "Suspicion & Heat" and "Expanded move pool" above |
-| v2: Justice win rate is now inflated (often 95-100%) across most profile x scenario combos, and Strategist rarely lingers long enough to reach Justice Tier 3 content | Still open (two follow-ups so far) — `evidenceMult` (input throttle) and `justiceChanceCeiling` (output cap, well below the old flat 95 on Hard/Very Hard) are both shipped and both verified **individually correct but jointly insufficient**: Hard/Very Hard stay at 87-100%. Root cause now precisely identified — see "v2 follow-up: per-scenario Justice chance ceiling" below: uncapped, unpenalized attempt regeneration (`JUSTICE_MAX_ATTEMPTS` + cooldown regen, no chance-formula penalty on failure) lets ~3 retries at ~50% each compound back to ~87%+ regardless of any single-attempt cap. That mechanic is the actual next fix and was kept out of scope for both follow-ups so far |
+| v2: Justice win rate is now inflated (often 95-100%) across most profile x scenario combos, and Strategist rarely lingers long enough to reach Justice Tier 3 content | Still open, partially narrowed (three follow-ups so far) — `evidenceMult`, `justiceChanceCeiling`, and now `JUSTICE_ESCALATION_PENALTY` (see "v2 follow-up: Justice attempt escalation penalty" above) are all shipped. The escalation penalty measurably narrows the gap — Gentle Giant/Everyman drop 7-22pp on Hard/Very Hard, and first-attempt win share rises from ~50% to ~57% on average, confirming less of the win rate now comes from compounding retries — but Strategist/Manipulator still land at 89-97% on Hard/Very Hard, because their fast Evidence-to-chance conversion clears the bar within 1-2 retries regardless of a flat per-attempt penalty. A scenario-scaled `JUSTICE_MAX_ATTEMPTS` was tried as a second lever and reverted: it gave no measurable benefit, because `JUSTICE_BOT_MAX_DAYS` comfortably exceeds `JUSTICE_COOLDOWN_DAYS` several times over, so capping burst attempts doesn't cap lifetime attempts available within the day budget. Closing the remaining Strategist/Manipulator gap likely needs a per-profile or Intellect-scaled escalation term, not a flat one — kept out of scope here |
 | v2: loud/naive Justice play (always taking the highest-apparent-Evidence move) could collapse to single-digit win chance by end of game — two systems (top Heat tier + `maybeEvidenceChallenge()`) independently drained Evidence at once, and `controlTheStory` still wrote to the wrong (Escape-track) stat | Done (v2 follow-up) — see "v2 follow-up: loud-play Heat trap" above |
