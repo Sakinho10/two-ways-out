@@ -33,25 +33,25 @@ const SCENARIOS = [
   {
     id:'easy', name:'Easy (Robbery)',
     security:{ suspicionMult:0.6, escapePlanMult:1.15, escalationPenaltyMult:0.6, guardHostileChance:0, guardThresholdDelta:2 },
-    scrutiny:{ familyThreshold:20, lawyerFloor:0.35, lawyerThreshold:30, mediaFloor:0.3, pipelineBonusMult:1.2, pipelineBonusCap:Infinity, tabloidEvent:false },
+    scrutiny:{ familyThreshold:20, lawyerFloor:0.35, lawyerThreshold:30, mediaFloor:0.3, pipelineBonusMult:1.2, pipelineBonusCap:Infinity, tabloidEvent:false, evidenceMult:1.1 },
     family:{ start:20, growthMult:1.15, cap:100 }
   },
   {
     id:'normal', name:"Normal (Wife's Murder)",
     security:{ suspicionMult:1, escapePlanMult:1, escalationPenaltyMult:1, guardHostileChance:0, guardThresholdDelta:0 },
-    scrutiny:{ familyThreshold:30, lawyerFloor:0.2, lawyerThreshold:40, mediaFloor:0.15, pipelineBonusMult:1, pipelineBonusCap:Infinity, tabloidEvent:false },
+    scrutiny:{ familyThreshold:30, lawyerFloor:0.2, lawyerThreshold:40, mediaFloor:0.15, pipelineBonusMult:1, pipelineBonusCap:Infinity, tabloidEvent:false, evidenceMult:1.0 },
     family:{ start:15, growthMult:1, cap:100 }
   },
   {
     id:'hard', name:'Hard (Cop Killer)',
     security:{ suspicionMult:1.3, escapePlanMult:0.85, escalationPenaltyMult:1.4, guardHostileChance:0.25, guardThresholdDelta:-2 },
-    scrutiny:{ familyThreshold:40, lawyerFloor:0.12, lawyerThreshold:55, mediaFloor:0.08, pipelineBonusMult:0.75, pipelineBonusCap:Infinity, tabloidEvent:false },
+    scrutiny:{ familyThreshold:40, lawyerFloor:0.12, lawyerThreshold:55, mediaFloor:0.08, pipelineBonusMult:0.75, pipelineBonusCap:Infinity, tabloidEvent:false, evidenceMult:0.75 },
     family:{ start:15, growthMult:0.75, cap:100 }
   },
   {
     id:'veryhard', name:'Very Hard (Senator)',
     security:{ suspicionMult:1.22, escapePlanMult:0.82, escalationPenaltyMult:1.3, guardHostileChance:0.35, guardThresholdDelta:-3 },
-    scrutiny:{ familyThreshold:45, lawyerFloor:0.12, lawyerThreshold:65, mediaFloor:0.07, pipelineBonusMult:0.6, pipelineBonusCap:7, tabloidEvent:true },
+    scrutiny:{ familyThreshold:45, lawyerFloor:0.12, lawyerThreshold:65, mediaFloor:0.07, pipelineBonusMult:0.6, pipelineBonusCap:7, tabloidEvent:true, evidenceMult:0.65 },
     family:{ start:15, growthMult:0.85, cap:60 }
   }
 ];
@@ -91,7 +91,11 @@ function applyDelta(S, d){
   if(d.lawyer) S.lawyer = clamp(S.lawyer + d.lawyer);
   if(d.media) S.media = clamp(S.media + d.media);
   if(d.connections) S.connections = clamp(S.connections + d.connections);
-  if(d.evidence) S.evidence = clamp(S.evidence + d.evidence);
+  if(d.evidence){
+    let e = d.evidence;
+    if(e > 0 && S.scenario) e = Math.round(e * S.scenario.scrutiny.evidenceMult);
+    S.evidence = clamp(S.evidence + e);
+  }
   if(d.trust) S.trust = clamp(S.trust + d.trust);
   if(d.escapePlan){
     let p = d.escapePlan;

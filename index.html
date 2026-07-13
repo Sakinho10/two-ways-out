@@ -506,7 +506,10 @@ function rampEfficiency(source, threshold, floor){
 //   scrutiny  — throttles the Credibility pipeline's Lawyer/Media stages:
 //               the rampEfficiency() threshold/floor pair those two stages
 //               use, and a multiplier (and, for Very Hard, a hard ceiling)
-//               on how much each milestone adds to pipelineBonus.
+//               on how much each milestone adds to pipelineBonus. Also
+//               carries evidenceMult, which throttles Evidence growth
+//               specifically (positive gains only), mirroring how
+//               security.escapePlanMult throttles Escape Plan growth.
 //   family    — starting `family` value, a multiplier on its growth from
 //               library/guard/letters, and a soft cap on the stat itself
 //               (Very Hard: even a perfect family can't fully fix this).
@@ -519,7 +522,7 @@ const SCENARIOS = [
     tagline:"Nobody is watching this case.",
     teaser:"A convenience store robbery, four blocks from where you actually were that night. The file is thin, the detective who caught it moved on to bigger cases months ago, and half the guard roster doesn't know your name. This is the kind of conviction that comes apart quietly, the moment anyone bothers to pull the thread.",
     security:{ suspicionMult:0.6, escapePlanMult:1.15, escalationPenaltyMult:0.6, guardHostileChance:0, guardThresholdDelta:2 },
-    scrutiny:{ familyThreshold:20, lawyerFloor:0.35, lawyerThreshold:30, mediaFloor:0.3, pipelineBonusMult:1.2, pipelineBonusCap:Infinity, tabloidEvent:false },
+    scrutiny:{ familyThreshold:20, lawyerFloor:0.35, lawyerThreshold:30, mediaFloor:0.3, pipelineBonusMult:1.2, pipelineBonusCap:Infinity, tabloidEvent:false, evidenceMult:1.1 },
     family:{ start:20, growthMult:1.15, cap:100 }
   },
   {
@@ -527,7 +530,7 @@ const SCENARIOS = [
     tagline:"The standard wrongful conviction. No thumb on the scale.",
     teaser:"Four hundred and some days since they brought you in for a murder you didn't commit — your wife's. The evidence was circumstantial, the trial was fast, and the DA needed a conviction more than the truth. Nobody in this building is rooting for you, but nobody's hunting you either. Just you, the file, and the clock.",
     security:{ suspicionMult:1, escapePlanMult:1, escalationPenaltyMult:1, guardHostileChance:0, guardThresholdDelta:0 },
-    scrutiny:{ familyThreshold:30, lawyerFloor:0.2, lawyerThreshold:40, mediaFloor:0.15, pipelineBonusMult:1, pipelineBonusCap:Infinity, tabloidEvent:false },
+    scrutiny:{ familyThreshold:30, lawyerFloor:0.2, lawyerThreshold:40, mediaFloor:0.15, pipelineBonusMult:1, pipelineBonusCap:Infinity, tabloidEvent:false, evidenceMult:1.0 },
     family:{ start:15, growthMult:1, cap:100 }
   },
   {
@@ -535,7 +538,7 @@ const SCENARIOS = [
     tagline:"Everyone in this building has a personal stake in you staying convicted.",
     teaser:"They say you killed one of their own — a ten-year officer with a wife and three kids at the funeral half the department attended. It doesn't matter what the ballistics actually show. Guards who've never met you already hate you, the union is calling reporters before your own lawyer can, and the DA's office would rather bury the file than reopen it. You're not fighting a case anymore. You're fighting an institution.",
     security:{ suspicionMult:1.3, escapePlanMult:0.85, escalationPenaltyMult:1.4, guardHostileChance:0.25, guardThresholdDelta:-2 },
-    scrutiny:{ familyThreshold:40, lawyerFloor:0.12, lawyerThreshold:55, mediaFloor:0.08, pipelineBonusMult:0.75, pipelineBonusCap:Infinity, tabloidEvent:false },
+    scrutiny:{ familyThreshold:40, lawyerFloor:0.12, lawyerThreshold:55, mediaFloor:0.08, pipelineBonusMult:0.75, pipelineBonusCap:Infinity, tabloidEvent:false, evidenceMult:0.75 },
     family:{ start:15, growthMult:0.75, cap:100 }
   },
   {
@@ -543,7 +546,7 @@ const SCENARIOS = [
     tagline:"The whole country already knows you're guilty.",
     teaser:"You're the man who killed a sitting senator on the steps of a building he was supposed to be safe in. It led every broadcast for a week. Strangers recognize your face from a courtroom sketch. Your family gets letters meant for you, and your lawyer gets calls meant to scare him off the case. There's no version of this where the noise fully stops — only quieter days and much louder ones.",
     security:{ suspicionMult:1.22, escapePlanMult:0.82, escalationPenaltyMult:1.3, guardHostileChance:0.35, guardThresholdDelta:-3 },
-    scrutiny:{ familyThreshold:45, lawyerFloor:0.12, lawyerThreshold:65, mediaFloor:0.07, pipelineBonusMult:0.6, pipelineBonusCap:7, tabloidEvent:true },
+    scrutiny:{ familyThreshold:45, lawyerFloor:0.12, lawyerThreshold:65, mediaFloor:0.07, pipelineBonusMult:0.6, pipelineBonusCap:7, tabloidEvent:true, evidenceMult:0.65 },
     family:{ start:15, growthMult:0.85, cap:60 }
   }
 ];
@@ -590,7 +593,13 @@ function applyDelta(d){
   if(d.lawyer) S.lawyer = clamp(S.lawyer + d.lawyer);
   if(d.media) S.media = clamp(S.media + d.media);
   if(d.connections) S.connections = clamp(S.connections + d.connections);
-  if(d.evidence) S.evidence = clamp(S.evidence + d.evidence);
+  if(d.evidence){
+    let e = d.evidence;
+    // scrutiny scenario knob: throttles Evidence growth specifically (only
+    // gains, not losses from challenges/Heat-tier events — mirrors escapePlanMult)
+    if(e > 0 && S.scenario) e = Math.round(e * S.scenario.scrutiny.evidenceMult);
+    S.evidence = clamp(S.evidence + e);
+  }
   if(d.trust) S.trust = clamp(S.trust + d.trust);
   if(d.escapePlan){
     let p = d.escapePlan;
