@@ -33,25 +33,25 @@ const SCENARIOS = [
   {
     id:'easy', name:'Easy (Robbery)',
     security:{ suspicionMult:0.6, escapePlanMult:1.15, escalationPenaltyMult:0.6, guardHostileChance:0, guardThresholdDelta:2 },
-    scrutiny:{ familyThreshold:20, lawyerFloor:0.35, lawyerThreshold:30, mediaFloor:0.3, pipelineBonusMult:1.2, pipelineBonusCap:Infinity, tabloidEvent:false, evidenceMult:1.1 },
+    scrutiny:{ familyThreshold:20, lawyerFloor:0.35, lawyerThreshold:30, mediaFloor:0.3, pipelineBonusMult:1.2, pipelineBonusCap:Infinity, tabloidEvent:false, evidenceMult:1.1, justiceChanceCeiling:95 },
     family:{ start:20, growthMult:1.15, cap:100 }
   },
   {
     id:'normal', name:"Normal (Wife's Murder)",
     security:{ suspicionMult:1, escapePlanMult:1, escalationPenaltyMult:1, guardHostileChance:0, guardThresholdDelta:0 },
-    scrutiny:{ familyThreshold:30, lawyerFloor:0.2, lawyerThreshold:40, mediaFloor:0.15, pipelineBonusMult:1, pipelineBonusCap:Infinity, tabloidEvent:false, evidenceMult:1.0 },
+    scrutiny:{ familyThreshold:30, lawyerFloor:0.2, lawyerThreshold:40, mediaFloor:0.15, pipelineBonusMult:1, pipelineBonusCap:Infinity, tabloidEvent:false, evidenceMult:1.0, justiceChanceCeiling:95 },
     family:{ start:15, growthMult:1, cap:100 }
   },
   {
     id:'hard', name:'Hard (Cop Killer)',
     security:{ suspicionMult:1.3, escapePlanMult:0.85, escalationPenaltyMult:1.4, guardHostileChance:0.25, guardThresholdDelta:-2 },
-    scrutiny:{ familyThreshold:40, lawyerFloor:0.12, lawyerThreshold:55, mediaFloor:0.08, pipelineBonusMult:0.75, pipelineBonusCap:Infinity, tabloidEvent:false, evidenceMult:0.75 },
+    scrutiny:{ familyThreshold:40, lawyerFloor:0.12, lawyerThreshold:55, mediaFloor:0.08, pipelineBonusMult:0.75, pipelineBonusCap:Infinity, tabloidEvent:false, evidenceMult:0.75, justiceChanceCeiling:72 },
     family:{ start:15, growthMult:0.75, cap:100 }
   },
   {
     id:'veryhard', name:'Very Hard (Senator)',
     security:{ suspicionMult:1.22, escapePlanMult:0.82, escalationPenaltyMult:1.3, guardHostileChance:0.35, guardThresholdDelta:-3 },
-    scrutiny:{ familyThreshold:45, lawyerFloor:0.12, lawyerThreshold:65, mediaFloor:0.07, pipelineBonusMult:0.6, pipelineBonusCap:7, tabloidEvent:true, evidenceMult:0.65 },
+    scrutiny:{ familyThreshold:45, lawyerFloor:0.12, lawyerThreshold:65, mediaFloor:0.07, pipelineBonusMult:0.6, pipelineBonusCap:7, tabloidEvent:true, evidenceMult:0.65, justiceChanceCeiling:58 },
     family:{ start:15, growthMult:0.85, cap:60 }
   }
 ];
@@ -684,7 +684,8 @@ const HEAT_CHANCE_PENALTY = 0.12;
 function computeJusticeChance(S){
   const intFactor = (S.profile.stats.intellect - 50) * 0.006;
   const raw = 3 + S.evidence * (0.85 + intFactor) + S.pipelineBonus - S.heat * HEAT_CHANCE_PENALTY;
-  return Math.max(1, Math.min(95, raw));
+  const ceiling = S.scenario ? S.scenario.scrutiny.justiceChanceCeiling : 95;
+  return Math.max(1, Math.min(ceiling, raw));
 }
 
 const ESCAPE_SUSPICION_PENALTY = 0.2;
@@ -1123,6 +1124,69 @@ function checkQuietEscapeViability(){
 }
 
 // ---------------------------------------------------------------------
+// v2 follow-up check: patient/cautious Justice viability under the real
+// trial-deadline budget. The justiceChanceCeiling fix explicitly does not
+// touch CYCLE_DAYS/APPEALS_ALLOWED, but per the "quiet/patient Escape win
+// rate" precedent (check 2 above), that must be confirmed, not assumed.
+// Unlike the quiet Escape check (which uses an artificial 900-day cap
+// since Escape has no deadline), this bot runs under the real
+// trialDeadline/appeals mechanics (checkTrialDeadline/'sentence-stands')
+// since that IS the day-budget pressure in question. The bot never
+// touches a Heat-generating move (genuinely quiet, not just Heat-averse)
+// and only attempts once its chance is within QUIET_JUSTICE_CHANCE_MARGIN
+// of the scenario's own justiceChanceCeiling — "high confidence" is
+// relative to what's actually achievable now that the ceiling is
+// per-scenario, not a flat number.
+// ---------------------------------------------------------------------
+const QUIET_JUSTICE_HEAT_REST = 30; // rest well before Heat gets loud
+const QUIET_JUSTICE_CHANCE_MARGIN = 10; // attempt once within this of the scenario's ceiling
+const QUIET_JUSTICE_MAX_ITER = 5000; // safety guard only — real termination is the trial deadline
+
+function quietJusticeStep(S){
+  maybeRegenJusticeAttempt(S);
+  const ceiling = S.scenario.scrutiny.justiceChanceCeiling;
+  if(S.justiceAttemptsLeft > 0 && computeJusticeChance(S) >= ceiling - QUIET_JUSTICE_CHANCE_MARGIN){
+    tryPresentCase(S);
+    return;
+  }
+  if(S.heat >= QUIET_JUSTICE_HEAT_REST){
+    runAction(S, 'rest');
+    return;
+  }
+  const quietOptions = S.todayMoves.filter(id => ACTION_SIDE[id] === 'just' && FOOTPRINT_HEAT[id] == null);
+  if(quietOptions.length > 0){
+    runAction(S, pickPreferred(quietOptions, JUSTICE_BASE_IDS));
+  } else {
+    runAction(S, 'rest');
+  }
+}
+
+function checkQuietJusticeViability(){
+  const N = 150;
+  console.log(`\n=== v2 follow-up check: patient/cautious Justice viability under the real trial-deadline budget, ${N} runs per combo ===`);
+  let anyFlag = false;
+  for(const scenario of SCENARIOS){
+    for(const profile of PROFILES){
+      let winCount = 0, deadlineOutCount = 0, avgDaysAtWinSum = 0;
+      for(let i=0;i<N;i++){
+        const S = newState(profile, scenario);
+        let iter = 0;
+        while(!S.over && iter < QUIET_JUSTICE_MAX_ITER){ quietJusticeStep(S); iter += 1; }
+        if(S.ending === 'justice-win'){ winCount += 1; avgDaysAtWinSum += S.day; }
+        if(S.ending === 'sentence-stands') deadlineOutCount += 1;
+      }
+      const winPct = (winCount/N*100).toFixed(0);
+      const deadlinePct = (deadlineOutCount/N*100).toFixed(0);
+      const avgDays = winCount ? (avgDaysAtWinSum/winCount).toFixed(0) : '—';
+      const flag = winCount === 0 ? '  FLAG (0% quiet-play win rate)' : (winCount/N < 0.2 ? '  FLAG (<20% quiet-play win rate)' : '');
+      if(flag) anyFlag = true;
+      console.log(`  ${scenario.id.padEnd(9)}${profile.name.padEnd(16)} winRate=${winPct}%  ranOutOfBudget=${deadlinePct}%  avgDaysAtWin=${avgDays}${flag}`);
+    }
+  }
+  if(!anyFlag) console.log('  none — patient/cautious Justice play clears 20% win rate in every combo; the ceiling change does not create day-budget pressure.');
+}
+
+// ---------------------------------------------------------------------
 // v2 follow-up check: loud vs. paced Justice play. Follow-up bug report —
 // a player who greedily takes whichever offered Justice move LOOKS like
 // the biggest Evidence gain (the natural reading of each move's own
@@ -1256,6 +1320,7 @@ function main(){
 
   checkTier3JusticeReachability();
   checkQuietEscapeViability();
+  checkQuietJusticeViability();
   checkLoudJusticeChance();
 
   // ---- v2 regression check: Very Hard / Strategist / Escape Elite ----
