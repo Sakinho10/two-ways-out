@@ -641,7 +641,7 @@ const SUSPICION_DECAY = -3;
 
 const FOOTPRINT_HEAT = {
   pressStatement:6, pushBackOnDepartment:7, steerCoverage:8, publicRally:8,
-  whistleblowerLeak:9
+  whistleblowerLeak:9, controlTheStory:8
 };
 const HEAT_DECAY = -2;
 
@@ -836,8 +836,14 @@ const HEAT_TIERS = [
     }]},
   { min:95, max:100, label:'Story has turned', chance:0.55, escapeTrackChance:0.9,
     events:[ ()=>{
-      applyDelta({evidence:-rand(14,22)});
-      return `\n\nA key witness recants, on the record, citing "pressure from all sides." Your case just lost ground it may not get back. (-Evidence)`;
+      // Deliberately does NOT touch Evidence — maybeEvidenceChallenge()
+      // already attacks Evidence independently once it crosses 30, and
+      // stacking both systems on the same stat compounded unpredictably,
+      // specifically punishing the player for building up the exact stat
+      // they're trying to win with. Lawyer/Media friction instead, same
+      // spirit as the 80-94 tier below.
+      applyDelta({lawyer:-rand(10,16), media:-rand(6,10)});
+      return `\n\nA key witness recants, on the record, citing "pressure from all sides." Your lawyer scrambles to contain the fallout, and the coverage turns hostile overnight. (-Lawyer, -Media)`;
     }]}
 ];
 
@@ -1138,14 +1144,13 @@ const ACTIONS = [
   },
   {
     id:'controlTheStory', label:'Get out ahead of the story yourself', side:'just',
-    desc:'Big +Evidence, +Media · very high +Suspicion, the whole country is already watching',
+    desc:'Big +Evidence, +Media · footprint 8 Heat, the whole country is already watching',
     run(mult=1){
       const chaFactor = statFactor(S.profile.stats.charisma);
       const e = Math.round(rand(10,15)*mult*chaFactor);
       const med = Math.round(rand(4,6)*mult*chaFactor);
-      const s = rand(7,11);
-      applyDelta({evidence:e, media:med, suspicion:s});
-      return `You get a detail to a sympathetic reporter before the DA's office can spin it first — something specific enough to be credible, small enough not to blow back on your lawyer. It works. It also means the whole country's coverage of you shifts, if only for a day, and every guard on this block clocks it. (+${e} Evidence, +${med} Media, +${s} Suspicion)`;
+      applyDelta({evidence:e, media:med});
+      return `You get a detail to a sympathetic reporter before the DA's office can spin it first — something specific enough to be credible, small enough not to blow back on your lawyer. It works. It also means the whole country's coverage of you shifts, if only for a day, and every guard on this block clocks it. (+${e} Evidence, +${med} Media)`;
     }
   },
 
@@ -1534,7 +1539,7 @@ const MOVE_UNLOCK_CONDITIONS = {
   gymTime: () => S.day >= 3,
   infirmaryHelp: () => S.family >= 10,
   cultivateRoutine: () => (S.actionCounts.scout||0) >= 2,
-  pushBackOnDepartment: () => S.lawyer >= 30,
+  pushBackOnDepartment: () => S.lawyer >= 18,
   forgeRapport: () => S.connections >= 20,
   mentorInmate: () => S.trust >= 25,
   quietWorkDetail: () => S.trust >= 20 || (S.profile && S.profile.id === 'giant' && (S.actionCounts.laborCrew||0) >= 1),

@@ -401,6 +401,65 @@ rather than bundled into this rework. `sim/pipeline_sim.js`'s existing
 convention is report-only (flag deviations, let a human retune); this
 finding follows that same convention.
 
+## v2 follow-up: loud-play Heat trap (fixed)
+
+Playtesting surfaced a distinct, more severe bug on top of the general
+finding above: a player following the natural "always take the
+highest-Evidence move" strategy saw their Justice chance *collapse* to
+single digits by end of game, rather than just staying high like the
+finding above describes. Two systems were independently draining the same
+stat: the `95-100` Heat tier's event applied `evidence:-rand(14,22)`
+directly, stacking with the unrelated `maybeEvidenceChallenge()` mechanic
+(which already attacks Evidence once it crosses 30) — so building up
+Evidence, the exact stat Justice is won on, got punished twice over once
+Heat capped out. Repeated Heat-generating moves reached that Heat tier
+fast in the first place because `pressStatement` was the *only* early
+Heat move available (`pushBackOnDepartment` didn't unlock until Lawyer
+30), so a loud player had no second option to break up the `repMult`
+escalation from repeating the same move.
+
+Three fixes, all mirrored into `sim/pipeline_sim.js`:
+
+1. The `95-100` Heat tier ("Story has turned") no longer touches Evidence
+   — redirected to Lawyer/Media friction, same shape as the `80-94` tier.
+   Evidence is now only ever touched by `maybeEvidenceChallenge()` and the
+   lighter `40-59`/`60-79` Heat tier pokes, never compounded.
+2. `pushBackOnDepartment`'s gate dropped from `Lawyer >= 30` to `Lawyer >=
+   18`, giving loud Justice play a second Heat move to alternate with
+   earlier, breaking up the single-move repetition streak that drove Heat
+   to its ceiling.
+3. `controlTheStory` (the Very Hard scenario-signature move) was a
+   pre-Heat-split leftover — it still hardcoded `applyDelta({...,
+   suspicion:s})`, adding to the wrong (Escape-track) stat, and since its
+   id wasn't in `FOOTPRINT_HEAT` it was also *undone* by the automatic
+   Heat decay every time it ran. Migrated to the Heat system: footprint 8
+   (matching `steerCoverage`/`publicRally`), no longer touches
+   `S.suspicion` at all. Its `id` is unchanged (still referenced by
+   `SCENARIO_SIGNATURE_MOVE.veryhard` and any existing save/leaderboard
+   data).
+
+Verified with a new harness check, `checkLoudJusticeChance()` — a bot that
+picks whichever offered Justice move *looks* biggest by its own nominal
+Evidence range (ignoring Heat entirely, `EVIDENCE_RANK`), run for 30 days
+with no attempts, reporting `computeJusticeChance()` at the end, against
+all 16 profile × scenario combos, alongside a "paced" variant that backs
+off Heat moves above Heat 45 for comparison:
+
+```
+node sim/pipeline_sim.js
+```
+
+Result: loud play's end-of-game chance now ranges **~63-95%** across every
+combo (worst case Very Hard/Gentle Giant), never collapsing — comfortably
+above the ~50% floor this fix targeted, and close to the paced variant's
+numbers in every combo, confirming loud play is no longer *self-defeating*,
+just occasionally a bit less efficient than pacing would be. This is a
+narrower, distinct fix from the "Justice win rate generally inflated"
+finding above (still open) — that finding is about the *ceiling* being
+too high across the board; this one was about a *trap* that could put the
+floor at zero for an intuitive playstyle. Fixing the trap doesn't fix the
+ceiling.
+
 ## Known Gaps
 
 | Item | Status |
@@ -412,3 +471,4 @@ finding follows that same convention.
 | No grading/ranking on the ending screen | Done — `computeGrade()` produces a letter grade, raw score, generated comment, and Elite badge, described above |
 | Single Suspicion stat rose regardless of play style and went inert past a flat 3-event pool; move pool felt repetitive across playthroughs | Done (v2) — split into Suspicion (Escape)/Heat (Justice), each footprint-driven and decaying, plus a tier ladder and ~28 new moves across earned-through-play gates — see "Suspicion & Heat" and "Expanded move pool" above |
 | v2: Justice win rate is now inflated (often 95-100%) across most profile x scenario combos, and Strategist rarely lingers long enough to reach Justice Tier 3 content | Open — root-caused in "v2 verification" above (Heat's deliberately mild, Evidence isn't scenario-throttled); needs a dedicated balance follow-up, not bundled into this PR |
+| v2: loud/naive Justice play (always taking the highest-apparent-Evidence move) could collapse to single-digit win chance by end of game — two systems (top Heat tier + `maybeEvidenceChallenge()`) independently drained Evidence at once, and `controlTheStory` still wrote to the wrong (Escape-track) stat | Done (v2 follow-up) — see "v2 follow-up: loud-play Heat trap" above |

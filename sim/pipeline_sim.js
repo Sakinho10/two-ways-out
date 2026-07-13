@@ -127,7 +127,7 @@ const SUSPICION_DECAY = -3;
 
 const FOOTPRINT_HEAT = {
   pressStatement:6, pushBackOnDepartment:7, steerCoverage:8, publicRally:8,
-  whistleblowerLeak:9
+  whistleblowerLeak:9, controlTheStory:8
 };
 const HEAT_DECAY = -2;
 
@@ -232,7 +232,7 @@ const HEAT_TIERS = [
     (S)=> applyDelta(S, {media:-6})
   ]},
   { min:95, max:100, chance:0.55, escapeTrackChance:0.9, effects:[
-    (S)=> applyDelta(S, {evidence:-rand(14,22)})
+    (S)=> applyDelta(S, {lawyer:-rand(10,16), media:-rand(6,10)})
   ]}
 ];
 
@@ -400,8 +400,7 @@ const ACTIONS = {
     const chaFactor = statFactor(S.profile.stats.charisma);
     const e = Math.round(rand(10,15)*mult*chaFactor);
     const med = Math.round(rand(4,6)*mult*chaFactor);
-    const s = rand(7,11);
-    applyDelta(S, {evidence:e, media:med, suspicion:s});
+    applyDelta(S, {evidence:e, media:med});
   },
 
   // -------- v2: expanded move pool --------
@@ -570,7 +569,7 @@ const MOVE_UNLOCK_CONDITIONS = {
   gymTime: (S) => S.day >= 3,
   infirmaryHelp: (S) => S.family >= 10,
   cultivateRoutine: (S) => (S.actionCounts.scout||0) >= 2,
-  pushBackOnDepartment: (S) => S.lawyer >= 30,
+  pushBackOnDepartment: (S) => S.lawyer >= 18,
   forgeRapport: (S) => S.connections >= 20,
   mentorInmate: (S) => S.trust >= 25,
   quietWorkDetail: (S) => S.trust >= 20 || (S.profile && S.profile.id === 'giant' && (S.actionCounts.laborCrew||0) >= 1),
@@ -1119,6 +1118,73 @@ function checkQuietEscapeViability(){
   if(!anyZero) console.log('  none — quiet/patient play clears 20% Escape win rate in every combo.');
 }
 
+// ---------------------------------------------------------------------
+// v2 follow-up check: loud vs. paced Justice play. Follow-up bug report —
+// a player who greedily takes whichever offered Justice move LOOKS like
+// the biggest Evidence gain (the natural reading of each move's own
+// description, ignoring Heat entirely) used to see repeated Heat moves
+// compound via repMult/trialProximityMult into the 95-100 Heat tier fast,
+// whose consequence used to also drain Evidence directly — stacking with
+// the independent maybeEvidenceChallenge() mechanic on the same stat.
+// EVIDENCE_RANK approximates "what a player reading descriptions would
+// judge as the biggest Evidence move that day" (nominal average of each
+// move's own rand() range) — not the real stat-scaled amount, since a
+// player choosing moves doesn't know profile-factor math either.
+// ---------------------------------------------------------------------
+const EVIDENCE_RANK = {
+  library:6, letters:8.5, reviewTestimony:9.5, studyCaseFile:7,
+  pushBackOnDepartment:10.5, pressStatement:12, mentorInmate:4.5,
+  scheduleAhead:6.5, contingencyPlan:9, spreadRumor:5.5, steerCoverage:11.5,
+  whistleblowerLeak:18, controlTheStory:12.5, keepEveryoneTalking:4
+};
+const LOUD_HEAT_BACKOFF = 45; // "paced" bot backs off Heat moves above this
+
+function loudJusticeStep(S, paced){
+  const justiceOptions = S.todayMoves.filter(id => ACTION_SIDE[id] === 'just');
+  let candidates = justiceOptions;
+  if(paced && S.heat >= LOUD_HEAT_BACKOFF){
+    const nonHeat = justiceOptions.filter(id => FOOTPRINT_HEAT[id] == null);
+    if(nonHeat.length > 0) candidates = nonHeat;
+  }
+  if(candidates.length === 0){ runAction(S, 'rest'); return; }
+  let best = candidates[0], bestRank = EVIDENCE_RANK[best] || 0;
+  for(const id of candidates){
+    const rank = EVIDENCE_RANK[id] || 0;
+    if(rank > bestRank){ best = id; bestRank = rank; }
+  }
+  runAction(S, best);
+}
+
+const LOUD_JUSTICE_DAYS = 30; // a realistic "most of a game" horizon, no attempts — isolates end-state chance
+
+function checkLoudJusticeChance(){
+  const N = 100;
+  console.log(`\n=== v2 follow-up check: loud vs. paced Justice play, end-of-game chance after ${LOUD_JUSTICE_DAYS} days, ${N} runs per combo ===`);
+  let anyCollapse = false;
+  for(const scenario of SCENARIOS){
+    for(const profile of PROFILES){
+      let loudChanceSum = 0, pacedChanceSum = 0, loudHeatSum = 0, pacedHeatSum = 0;
+      for(let i=0;i<N;i++){
+        const Sloud = newState(profile, scenario);
+        for(let d=0; d<LOUD_JUSTICE_DAYS && !Sloud.over; d++) loudJusticeStep(Sloud, false);
+        loudChanceSum += computeJusticeChance(Sloud);
+        loudHeatSum += Sloud.heat;
+
+        const Spaced = newState(profile, scenario);
+        for(let d=0; d<LOUD_JUSTICE_DAYS && !Spaced.over; d++) loudJusticeStep(Spaced, true);
+        pacedChanceSum += computeJusticeChance(Spaced);
+        pacedHeatSum += Spaced.heat;
+      }
+      const loudChance = (loudChanceSum/N).toFixed(1), pacedChance = (pacedChanceSum/N).toFixed(1);
+      const loudHeat = (loudHeatSum/N).toFixed(0), pacedHeat = (pacedHeatSum/N).toFixed(0);
+      const flag = loudChanceSum/N < 50 ? '  FLAG (loud play collapses below 50% chance)' : '';
+      if(flag) anyCollapse = true;
+      console.log(`  ${scenario.id.padEnd(9)}${profile.name.padEnd(16)} loud: chance=${loudChance.padStart(5)} heat=${loudHeat.padStart(3)}   paced: chance=${pacedChance.padStart(5)} heat=${pacedHeat.padStart(3)}${flag}`);
+    }
+  }
+  if(!anyCollapse) console.log('  none — loud (naive highest-Evidence) Justice play stays at or above 50% end-of-game chance in every combo.');
+}
+
 function main(){
   const N = 400;
   console.log(`Simulating ${N} playthroughs per profile x scenario x strategy (justice-greedy, escape-greedy)...\n`);
@@ -1186,6 +1252,7 @@ function main(){
 
   checkTier3JusticeReachability();
   checkQuietEscapeViability();
+  checkLoudJusticeChance();
 
   // ---- v2 regression check: Very Hard / Strategist / Escape Elite ----
   console.log(`\n=== v2 regression check: Very Hard / Strategist / Escape reachability (known-fragile combo) ===`);
